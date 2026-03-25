@@ -59,7 +59,7 @@ async def create_zoom_meeting(session_type, is_test=False):
     meet_time  = SESSIONS[session_type]["meeting_time"]
     start_time = f"{today}T{meet_time}+05:30"
 
-    # CRITICAL: Disable emails during test
+    # FEATURE: Silent test logic - Block emails if is_test is True
     send_email = not is_test 
 
     async with httpx.AsyncClient() as client:
@@ -68,12 +68,15 @@ async def create_zoom_meeting(session_type, is_test=False):
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             json={
                 "template_id": ZOOM_TEMPLATE_ID, 
+                "topic": f"{SESSIONS[session_type]['label']} Session - {today}",
+                "agenda": "Welcome to our daily session! Please find your details below.", # Description
                 "start_time": start_time, 
                 "type": 2,
-                "duration": 360,  # 6 Hours
+                "duration": 360, # FEATURE: 6 Hours
                 "settings": {
-                    "registrants_email_notification": send_email,
-                    "contact_name": "Automation Test" if is_test else "Support"
+                    "registrants_email_notification": send_email, 
+                    "meeting_authentication": False,
+                    "email_notification": True 
                 }
             },
         )
@@ -86,16 +89,25 @@ async def import_registrants(meeting_id, csv_path):
     registrants = []
 
     with open(csv_path, newline="", encoding="utf-8-sig") as f:
+        # Detect headers dynamically
         reader = csv.DictReader(f)
         for row in reader:
-            email = (row.get("Email") or row.get("email") or "").strip()
-            first = (row.get("First Name") or row.get("first_name") or row.get("FirstName") or row.get("Name") or "").strip()
-            last  = (row.get("Last Name") or row.get("last_name") or row.get("LastName") or "").strip()
+            # Handle standard headers and the ones seen in your export preview
+            email = next((v for k, v in row.items() if 'email' in k.lower()), "").strip()
+            name  = next((v for k, v in row.items() if 'name' in k.lower()), "").strip()
+            
             if email:
+                # Split name if only one name field exists
+                name_parts = name.split(" ", 1)
+                first = name_parts[0] if name_parts else "User"
+                last  = name_parts[1] if len(name_parts) > 1 else ""
                 registrants.append({"first_name": first, "last_name": last, "email": email})
 
+    if not registrants:
+        raise ValueError("CSV has 0 valid registrants for import.")
+
     async with httpx.AsyncClient() as client:
-        # Import in batches of 30 (Zoom API limit)
+        # Batch import (max 30 per request)
         for i in range(0, len(registrants), 30):
             batch = registrants[i : i + 30]
             r = await client.post(
@@ -129,7 +141,7 @@ async def export_csv(session_type, chat_id):
             await page.wait_for_load_state("networkidle")
             await page.goto(session["export_url"])
             
-            # FIXED: Targets only the "Export" button, ignoring "View"
+            # FEATURE: Strict button selector to avoid "View for Zoom" error
             async with page.expect_download(timeout=90000) as dl_info:
                 await page.locator('button[name="btnsavezoom"]:has-text("Export for Zoom")').click()
             
@@ -144,25 +156,25 @@ async def export_csv(session_type, chat_id):
 async def run_automation(session_type):
     try:
         csv_path = await export_csv(session_type, TELEGRAM_CHAT_ID)
-        # LIVE RUN: Emails enabled
+        # LIVE: Emails are sent
         meeting_id, reg_url = await create_zoom_meeting(session_type, is_test=False)
         count = await import_registrants(meeting_id, csv_path)
-        await telegram_app.bot.send_message(TELEGRAM_CHAT_ID, f"✅ Live Success!\n👥 {count} registrants imported.\n🔗 {reg_url}")
+        await telegram_app.bot.send_message(TELEGRAM_CHAT_ID, f"✅ Live Success!\n👥 {count} users imported.\n🔗 Registration Link: {reg_url}")
     except Exception as e:
-        await telegram_app.bot.send_message(TELEGRAM_CHAT_ID, f"❌ Live Failed: {e}")
+        await telegram_app.bot.send_message(TELEGRAM_CHAT_ID, f"❌ Live Automation Failed: {e}")
 
 async def run_test(session_type, chat_id):
     try:
         await telegram_app.bot.send_message(chat_id, f"🧪 Starting SILENT Test for {session_type.upper()}...")
         csv_path = await export_csv(session_type, chat_id)
         
-        # TEST RUN: Emails disabled
+        # TEST: Emails are BLOCKED
         meeting_id, reg_url = await create_zoom_meeting(session_type, is_test=True)
         count = await import_registrants(meeting_id, csv_path)
         
         await telegram_app.bot.send_message(
             chat_id, 
-            f"✅ *Test Success!*\n• Emails: 🔕 BLOCKED\n• Duration: 6 Hours\n• Imported: {count}\n• URL: {reg_url}",
+            f"✅ *Test Results*\n• Emails: 🔕 BLOCKED\n• Duration: 6 Hours\n• Description: Applied\n• Imported: {count}\n• URL: {reg_url}",
             parse_mode="Markdown"
         )
         
@@ -174,17 +186,19 @@ async def run_test(session_type, chat_id):
 # ── TELEGRAM HANDLERS ─────────────────────────────────────────────────────────
 async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != TELEGRAM_CHAT_ID: return
-    if not context.args: return
+    if not context.args: 
+        await update.message.reply_text("Usage: /test morning")
+        return
     asyncio.create_task(run_test(context.args[0].lower(), update.effective_chat.id))
 
 async def send_confirmation(session_type):
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Yes, Run Live", callback_data=f"yes_{session_type}"),
-        InlineKeyboardButton("❌ Skip Today",  callback_data=f"no_{session_type}"),
+        InlineKeyboardButton("❌ Skip today",  callback_data=f"no_{session_type}"),
     ]])
     await telegram_app.bot.send_message(
         TELEGRAM_CHAT_ID, 
-        f"Ready for {session_type} Live Automation?\n(Emails will be sent to users)", 
+        f"Ready for {session_type} Live Run?\n(Emails will be sent to users)", 
         reply_markup=keyboard
     )
 
@@ -193,11 +207,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     action, session_type = query.data.split("_", 1)
     if action == "yes":
-        await query.edit_message_text("🚀 Running LIVE (Registrant emails enabled)...")
+        await query.edit_message_text("🚀 Starting live automation...")
         asyncio.create_task(run_automation(session_type))
     else:
         await query.edit_message_text("⏭️ Automation skipped.")
 
+# ── MAIN ──────────────────────────────────────────────────────────────────────
 async def main():
     global telegram_app
     telegram_app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
