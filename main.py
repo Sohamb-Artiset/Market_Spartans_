@@ -111,12 +111,11 @@ async def delete_zoom_meeting(meeting_id):
     async with httpx.AsyncClient() as client:
         await client.delete(f"https://api.zoom.us/v2/meetings/{meeting_id}", headers={"Authorization": f"Bearer {token}"})
 
-# ── PLAYWRIGHT (FIXED DOWNLOAD LOGIC) ─────────────────────────────────────────
+# ── PLAYWRIGHT (STRICT SELECTOR FIX) ─────────────────────────────────────────
 async def export_csv(session_type, chat_id):
     session = SESSIONS[session_type]
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        # Using a Real-User Agent to avoid being blocked
         context = await browser.new_context(
             accept_downloads=True,
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -138,12 +137,11 @@ async def export_csv(session_type, chat_id):
             await page.goto(session["export_url"])
             await page.wait_for_load_state("networkidle")
 
-            # Note: We removed the date-filling steps because the site handles them 
             await telegram_app.bot.send_message(chat_id, "🖱️ Clicking 'Export for Zoom'...")
             
-            # Increased timeout and used the specific button name from your HTML 
+            # FIXED SELECTOR: Targets the button with the name btnsavezoom AND the specific text
             async with page.expect_download(timeout=90000) as dl_info:
-                await page.click('button[name="btnsavezoom"]')
+                await page.locator('button[name="btnsavezoom"]:has-text("Export for Zoom")').click()
             
             download = await dl_info.value
             tmp_path = tempfile.mktemp(suffix=".csv")
