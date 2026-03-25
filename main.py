@@ -40,9 +40,8 @@ SESSIONS = {
     },
 }
 
-# Global references
 telegram_app = None
-pending_jobs  = {}  # Session auto-skip timer 
+pending_jobs  = {}
 
 # ── ZOOM API ──────────────────────────────────────────────────────────────────
 async def get_zoom_token():
@@ -98,7 +97,6 @@ async def import_registrants(meeting_id, csv_path):
             r.raise_for_status()
     return len(registrants)
 
-# ── CSV UTILS ────────────────────────────────────────────────────────────────
 def count_csv(csv_path):
     rows = []
     with open(csv_path, newline="", encoding="utf-8-sig") as f:
@@ -113,11 +111,12 @@ async def delete_zoom_meeting(meeting_id):
     async with httpx.AsyncClient() as client:
         await client.delete(f"https://api.zoom.us/v2/meetings/{meeting_id}", headers={"Authorization": f"Bearer {token}"})
 
-# ── PLAYWRIGHT (WITH LIVE UPDATES) ────────────────────────────────────────────
+# ── PLAYWRIGHT (FIXED DOWNLOAD LOGIC) ─────────────────────────────────────────
 async def export_csv(session_type, chat_id):
     session = SESSIONS[session_type]
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
+        # Using a Real-User Agent to avoid being blocked
         context = await browser.new_context(
             accept_downloads=True,
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -133,29 +132,29 @@ async def export_csv(session_type, chat_id):
             await page.fill('input[name="username"]', MS_USERNAME)
             await page.fill('input[name="password"]', MS_PASSWORD)
             await page.click('button[type="submit"]')
-            
-            await telegram_app.bot.send_message(chat_id, "⏳ Waiting for dashboard...")
             await page.wait_for_load_state("networkidle")
 
             await telegram_app.bot.send_message(chat_id, "📂 Moving to Export page...")
             await page.goto(session["export_url"])
             await page.wait_for_load_state("networkidle")
 
+            # Note: We removed the date-filling steps because the site handles them 
             await telegram_app.bot.send_message(chat_id, "🖱️ Clicking 'Export for Zoom'...")
-            async with page.expect_download(timeout=60000) as dl_info:
-                # Uses specific button name 'btnsavezoom' 
+            
+            # Increased timeout and used the specific button name from your HTML 
+            async with page.expect_download(timeout=90000) as dl_info:
                 await page.click('button[name="btnsavezoom"]')
             
             download = await dl_info.value
             tmp_path = tempfile.mktemp(suffix=".csv")
             await download.save_as(tmp_path)
-            await telegram_app.bot.send_message(chat_id, "📥 File downloaded successfully!")
+            await telegram_app.bot.send_message(chat_id, "📥 Download complete!")
             return tmp_path
 
         except Exception as e:
-            await page.screenshot(path="error_screen.png")
-            with open("error_screen.png", "rb") as photo:
-                await telegram_app.bot.send_photo(chat_id, photo, caption=f"❌ Error at this step: {str(e)[:100]}")
+            await page.screenshot(path="error_debug.png")
+            with open("error_debug.png", "rb") as photo:
+                await telegram_app.bot.send_photo(chat_id, photo, caption=f"❌ Error during browser session: {str(e)[:100]}")
             raise e
         finally:
             await browser.close()
@@ -163,22 +162,14 @@ async def export_csv(session_type, chat_id):
 # ── AUTOMATION RUNNER ─────────────────────────────────────────────────────────
 async def run_automation(session_type):
     try:
-        chat_id = TELEGRAM_CHAT_ID
-        csv_path = await export_csv(session_type, chat_id)
-
-        await telegram_app.bot.send_message(chat_id, "⏳ Creating Zoom meeting...")
+        csv_path = await export_csv(session_type, TELEGRAM_CHAT_ID)
+        await telegram_app.bot.send_message(TELEGRAM_CHAT_ID, "⏳ Creating Zoom meeting...")
         meeting_id, reg_url = await create_zoom_meeting(session_type)
-
-        await telegram_app.bot.send_message(chat_id, "⏳ Importing registrants...")
+        await telegram_app.bot.send_message(TELEGRAM_CHAT_ID, "⏳ Importing registrants...")
         count = await import_registrants(meeting_id, csv_path)
-
-        await telegram_app.bot.send_message(
-            chat_id,
-            f"✅ *All done!*\n👥 {count} registrants imported\n\n📋 *Registration Link:*\n{reg_url}",
-            parse_mode="Markdown",
-        )
+        await telegram_app.bot.send_message(TELEGRAM_CHAT_ID, f"✅ Done! {count} imported.\n{reg_url}")
     except Exception as e:
-        await telegram_app.bot.send_message(chat_id, f"❌ *Automation failed!*\nError: `{e}`", parse_mode="Markdown")
+        await telegram_app.bot.send_message(TELEGRAM_CHAT_ID, f"❌ Failed: {e}")
 
 # ── TELEGRAM HANDLERS ─────────────────────────────────────────────────────────
 async def send_confirmation(session_type):
@@ -188,7 +179,7 @@ async def send_confirmation(session_type):
         InlineKeyboardButton("❌ Skip Today",  callback_data=f"no_{session_type}"),
     ]])
     await telegram_app.bot.send_message(
-        TELEGRAM_CHAT_ID, f"{session['label']} automation ready. Run now?\n(Auto-skips in 15 min)", 
+        TELEGRAM_CHAT_ID, f"{session['label']} session ready. Run now?\n(Auto-skips in 15 min)", 
         reply_markup=keyboard
     )
 
@@ -197,20 +188,17 @@ async def send_confirmation(session_type):
         if session_type in pending_jobs:
             await telegram_app.bot.send_message(TELEGRAM_CHAT_ID, f"⏰ Auto-skipped {session['label']}.")
             del pending_jobs[session_type]
-
     pending_jobs[session_type] = asyncio.create_task(auto_skip())
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     action, session_type = query.data.split("_", 1)
-
     if session_type in pending_jobs:
         pending_jobs[session_type].cancel()
         del pending_jobs[session_type]
-
     if action == "yes":
-        await query.edit_message_text("👍 Starting...")
+        await query.edit_message_text("👍 Starting automation...")
         asyncio.create_task(run_automation(session_type))
     else:
         await query.edit_message_text("👍 Skipped.")
@@ -220,15 +208,13 @@ async def run_test(session_type, chat_id):
         await telegram_app.bot.send_message(chat_id, f"🧪 *TEST: {session_type.upper()}*", parse_mode="Markdown")
         csv_path = await export_csv(session_type, chat_id)
         count, headers, preview = count_csv(csv_path)
-        
-        preview_txt = "\n".join([f"• {list(r.values())[:2]}" for r in preview])
-        await telegram_app.bot.send_message(chat_id, f"✅ CSV: {count} users found.\nPreview:\n{preview_txt}")
-        
+        preview_txt = "\n".join([f"• {list(r.values())[:3]}" for r in preview])
+        await telegram_app.bot.send_message(chat_id, f"✅ CSV Exported: {count} users.\nColumns: {headers}\nPreview:\n{preview_txt}")
         meeting_id, reg_url = await create_zoom_meeting(session_type)
         await delete_zoom_meeting(meeting_id)
-        await telegram_app.bot.send_message(chat_id, "✅ Zoom Linked & Test Meeting Cleaned Up!")
+        await telegram_app.bot.send_message(chat_id, "✅ Test Complete!")
     except Exception as e:
-        await telegram_app.bot.send_message(chat_id, f"❌ Test Failed: {e}")
+        logging.error(f"Test failed: {e}")
 
 async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != TELEGRAM_CHAT_ID: return
@@ -254,9 +240,6 @@ async def main():
     stop_event = asyncio.Event()
     signal.signal(signal.SIGTERM, lambda s, f: stop_event.set())
     await stop_event.wait()
-    
-    await telegram_app.stop()
-    await telegram_app.shutdown()
 
 if __name__ == "__main__":
     asyncio.run(main())
