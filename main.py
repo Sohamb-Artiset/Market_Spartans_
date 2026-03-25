@@ -64,7 +64,15 @@ async def create_zoom_meeting(session_type):
         r = await client.post(
             "https://api.zoom.us/v2/users/me/meetings",
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json={"template_id": ZOOM_TEMPLATE_ID, "start_time": start_time, "type": 2},
+            json={
+                "template_id": ZOOM_TEMPLATE_ID, 
+                "start_time": start_time, 
+                "type": 2,
+                "duration": 360,  # Explicitly set to 6 hours (360 minutes)
+                "settings": {
+                    "registrants_email_notification": True
+                }
+            },
         )
         r.raise_for_status()
         data = r.json()
@@ -111,7 +119,7 @@ async def delete_zoom_meeting(meeting_id):
     async with httpx.AsyncClient() as client:
         await client.delete(f"https://api.zoom.us/v2/meetings/{meeting_id}", headers={"Authorization": f"Bearer {token}"})
 
-# ── PLAYWRIGHT (STRICT SELECTOR FIX) ─────────────────────────────────────────
+# ── PLAYWRIGHT (STRICT SELECTOR) ──────────────────────────────────────────────
 async def export_csv(session_type, chat_id):
     session = SESSIONS[session_type]
     async with async_playwright() as p:
@@ -138,8 +146,6 @@ async def export_csv(session_type, chat_id):
             await page.wait_for_load_state("networkidle")
 
             await telegram_app.bot.send_message(chat_id, "🖱️ Clicking 'Export for Zoom'...")
-            
-            # FIXED SELECTOR: Targets the button with the name btnsavezoom AND the specific text
             async with page.expect_download(timeout=90000) as dl_info:
                 await page.locator('button[name="btnsavezoom"]:has-text("Export for Zoom")').click()
             
@@ -152,7 +158,7 @@ async def export_csv(session_type, chat_id):
         except Exception as e:
             await page.screenshot(path="error_debug.png")
             with open("error_debug.png", "rb") as photo:
-                await telegram_app.bot.send_photo(chat_id, photo, caption=f"❌ Error during browser session: {str(e)[:100]}")
+                await telegram_app.bot.send_photo(chat_id, photo, caption=f"❌ Error: {str(e)[:100]}")
             raise e
         finally:
             await browser.close()
@@ -161,9 +167,9 @@ async def export_csv(session_type, chat_id):
 async def run_automation(session_type):
     try:
         csv_path = await export_csv(session_type, TELEGRAM_CHAT_ID)
-        await telegram_app.bot.send_message(TELEGRAM_CHAT_ID, "⏳ Creating Zoom meeting...")
+        await telegram_app.bot.send_message(TELEGRAM_CHAT_ID, "⏳ Creating 6-hour Zoom meeting...")
         meeting_id, reg_url = await create_zoom_meeting(session_type)
-        await telegram_app.bot.send_message(TELEGRAM_CHAT_ID, "⏳ Importing registrants...")
+        await telegram_app.bot.send_message(TELEGRAM_CHAT_ID, "⏳ Importing registrants via Batch API...")
         count = await import_registrants(meeting_id, csv_path)
         await telegram_app.bot.send_message(TELEGRAM_CHAT_ID, f"✅ Done! {count} imported.\n{reg_url}")
     except Exception as e:
@@ -196,23 +202,28 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pending_jobs[session_type].cancel()
         del pending_jobs[session_type]
     if action == "yes":
-        await query.edit_message_text("👍 Starting automation...")
+        await query.edit_message_text("👍 Starting full automation...")
         asyncio.create_task(run_automation(session_type))
     else:
         await query.edit_message_text("👍 Skipped.")
 
 async def run_test(session_type, chat_id):
     try:
-        await telegram_app.bot.send_message(chat_id, f"🧪 *TEST: {session_type.upper()}*", parse_mode="Markdown")
+        await telegram_app.bot.send_message(chat_id, f"🧪 *FULL FUNCTIONAL TEST: {session_type.upper()}*", parse_mode="Markdown")
         csv_path = await export_csv(session_type, chat_id)
         count, headers, preview = count_csv(csv_path)
-        preview_txt = "\n".join([f"• {list(r.values())[:3]}" for r in preview])
-        await telegram_app.bot.send_message(chat_id, f"✅ CSV Exported: {count} users.\nColumns: {headers}\nPreview:\n{preview_txt}")
+        
+        await telegram_app.bot.send_message(chat_id, f"✅ CSV: {count} users. Now testing full Import...")
+        
+        # Test the ACTUAL import process, then delete
         meeting_id, reg_url = await create_zoom_meeting(session_type)
+        imported_count = await import_registrants(meeting_id, csv_path)
+        await telegram_app.bot.send_message(chat_id, f"✅ Zoom Import Success: {imported_count} users added to test meeting.")
+        
         await delete_zoom_meeting(meeting_id)
-        await telegram_app.bot.send_message(chat_id, "✅ Test Complete!")
+        await telegram_app.bot.send_message(chat_id, "🧹 Test meeting cleaned up.")
     except Exception as e:
-        logging.error(f"Test failed: {e}")
+        await telegram_app.bot.send_message(chat_id, f"❌ Test Failed: {e}")
 
 async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != TELEGRAM_CHAT_ID: return
