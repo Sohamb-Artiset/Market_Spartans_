@@ -77,7 +77,7 @@ async def create_zoom_meeting(session_type, is_test=False):
                 "type": 2,
                 "duration": 360, 
                 "settings": {
-                    "approval_type": 0,  # 👈 CRITICAL FIX: Forces registration to be ON (Auto-Approve)
+                    "approval_type": 0,  
                     "registrants_email_notification": send_email,
                     "meeting_authentication": False,
                     "email_notification": True 
@@ -93,10 +93,8 @@ async def import_registrants(meeting_id, csv_path):
     registrants = []
 
     with open(csv_path, newline="", encoding="utf-8-sig") as f:
-        # Using standard csv.reader since the file has no headers
         reader = csv.reader(f)
         for row in reader:
-            # Ensure the row actually has at least 2 columns to avoid index errors
             if len(row) >= 2:
                 email = row[0].strip()
                 name  = row[1].strip()
@@ -114,14 +112,14 @@ async def import_registrants(meeting_id, csv_path):
         for i in range(0, len(registrants), 30):
             batch = registrants[i : i + 30]
             r = await client.post(
-                f"https://api.zoom.us/v2/meetings/{meeting_id}/registrants/batch",
+                f"https://api.zoom.us/v2/meetings/{meeting_id}/batch_registrants", 
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
                 json={"registrants": batch},
             )
             r.raise_for_status()
 
     return len(registrants)
-
+    
 async def delete_zoom_meeting(meeting_id):
     token = await get_zoom_token()
     async with httpx.AsyncClient() as client:
@@ -141,8 +139,8 @@ async def export_csv(session_type):
             args=[
                 "--ignore-certificate-errors", 
                 "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",             # 👈 CRITICAL: Required for Docker
-                "--disable-dev-shm-usage"   # 👈 CRITICAL: Prevents memory crashes in Docker
+                "--no-sandbox",             
+                "--disable-dev-shm-usage"   
             ]
         )
         context = await browser.new_context(
@@ -151,19 +149,16 @@ async def export_csv(session_type):
         )
         page = await context.new_page()
         try:
-            # Replaced 'networkidle' with 'domcontentloaded' to prevent infinite hangs
             await page.goto(f"{session['site_url']}/index.php", wait_until="domcontentloaded")
             
             await page.fill('input[name="username"]', MS_USERNAME)
             await page.fill('input[name="password"]', MS_PASSWORD)
             
-            # Wait for the page navigation to trigger after clicking submit
             async with page.expect_navigation(wait_until="domcontentloaded"):
                 await page.click('button[type="submit"]')
             
             await page.goto(session["export_url"], wait_until="domcontentloaded")
 
-            # Strict mode fix: specifies the exact text of the button
             async with page.expect_download(timeout=120_000) as dl_info:
                 await page.locator('button[name="btnsavezoom"]:has-text("Export for Zoom")').click()
 
@@ -178,12 +173,14 @@ async def export_csv(session_type):
 # ── CSV COUNTER (test mode) ───────────────────────────────────────────────────
 def count_csv(csv_path):
     rows = []
-    headers = []
     with open(csv_path, newline="", encoding="utf-8-sig") as f:
-        reader  = csv.DictReader(f)
-        headers = reader.fieldnames or []
+        reader = csv.reader(f)
         for row in reader:
-            rows.append(row)
+            if len(row) >= 2:
+                # Store as a dict just to match your existing preview logic format
+                rows.append({"email": row[0].strip(), "name": row[1].strip()})
+                
+    headers = ["Email", "Name"] # Manually set the headers for the Telegram message
     return len(rows), headers, rows[:3]
 
 
@@ -239,7 +236,7 @@ async def run_test(session_type, chat_id):
         count, headers, preview = count_csv(csv_path)
 
         preview_text = "\n".join(
-            [f"  {i+1}. {list(r.values())[:3]}" for i, r in enumerate(preview)]
+            [f"  {i+1}. {list(r.values())[:2]}" for i, r in enumerate(preview)]
         )
         await telegram_app.bot.send_message(
             chat_id,
