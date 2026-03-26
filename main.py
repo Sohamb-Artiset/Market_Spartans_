@@ -102,10 +102,8 @@ async def import_registrants(meeting_id, csv_path):
                     name_parts = name.split(" ", 1)
                     first = name_parts[0] if name_parts else "User"
                     
-                    # 👈 CRITICAL FIX: Create the base object with ONLY required fields
                     person = {"first_name": first, "email": email}
                     
-                    # Zoom STRICTLY rejects empty strings, so we only add last_name if it actually exists
                     if len(name_parts) > 1 and name_parts[1].strip():
                         person["last_name"] = name_parts[1].strip()
                         
@@ -125,6 +123,11 @@ async def import_registrants(meeting_id, csv_path):
                     "registrants": batch
                 },
             )
+            
+            # 👈 CRITICAL DIAGNOSTIC FIX: Stop hiding the Zoom error message!
+            if r.status_code >= 400:
+                raise ValueError(f"Zoom Error {r.status_code}: {r.text}")
+                
             r.raise_for_status()
 
     return len(registrants)
