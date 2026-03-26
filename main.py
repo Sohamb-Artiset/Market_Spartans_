@@ -135,7 +135,12 @@ async def export_csv(session_type):
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=True,
-            args=["--ignore-certificate-errors", "--disable-blink-features=AutomationControlled"]
+            args=[
+                "--ignore-certificate-errors", 
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",             # 👈 CRITICAL: Required for Docker
+                "--disable-dev-shm-usage"   # 👈 CRITICAL: Prevents memory crashes in Docker
+            ]
         )
         context = await browser.new_context(
             accept_downloads=True,
@@ -143,14 +148,17 @@ async def export_csv(session_type):
         )
         page = await context.new_page()
         try:
-            await page.goto(f"{session['site_url']}/index.php")
-            await page.wait_for_load_state("networkidle")
+            # Replaced 'networkidle' with 'domcontentloaded' to prevent infinite hangs
+            await page.goto(f"{session['site_url']}/index.php", wait_until="domcontentloaded")
+            
             await page.fill('input[name="username"]', MS_USERNAME)
             await page.fill('input[name="password"]', MS_PASSWORD)
-            await page.click('button[type="submit"]')
-            await page.wait_for_load_state("networkidle")
-            await page.goto(session["export_url"])
-            await page.wait_for_load_state("networkidle")
+            
+            # Wait for the page navigation to trigger after clicking submit
+            async with page.expect_navigation(wait_until="domcontentloaded"):
+                await page.click('button[type="submit"]')
+            
+            await page.goto(session["export_url"], wait_until="domcontentloaded")
 
             # Strict mode fix: specifies the exact text of the button
             async with page.expect_download(timeout=120_000) as dl_info:
