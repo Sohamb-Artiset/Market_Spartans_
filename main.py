@@ -197,6 +197,7 @@ def count_csv(csv_path):
 
 
 # ── AUTOMATION RUNNER ─────────────────────────────────────────────────────────
+# ── AUTOMATION RUNNER ─────────────────────────────────────────────────────────
 async def run_automation(session_type):
     try:
         await telegram_app.bot.send_message(
@@ -218,17 +219,17 @@ async def run_automation(session_type):
             TELEGRAM_CHAT_ID,
             f"✅ All done!\n"
             f"👥 {count} registrants imported\n\n"
-            f"📋 *Registration Link:*\n{reg_url}\n\n"
+            f"📋 <b>Registration Link:</b>\n{reg_url}\n\n"
             f"👆 Copy & paste this to the WhatsApp group",
-            parse_mode="Markdown",
+            parse_mode="HTML", # 👈 CRITICAL FIX: Changed to HTML
         )
 
     except Exception as e:
         logging.error(f"Automation error [{session_type}]: {e}")
         await telegram_app.bot.send_message(
             TELEGRAM_CHAT_ID,
-            f"❌ *Automation failed!*\n\nError: `{str(e)}`\n\nPlease run manually today.",
-            parse_mode="Markdown",
+            f"❌ <b>Automation failed!</b>\n\nError: <code>{str(e)}</code>\n\nPlease run manually today.",
+            parse_mode="HTML", # 👈 CRITICAL FIX: Changed to HTML
         )
 
 
@@ -237,9 +238,9 @@ async def run_test(session_type, chat_id):
     try:
         await telegram_app.bot.send_message(
             chat_id,
-            f"🧪 *TEST MODE — {SESSIONS[session_type]['label']} Session*\n"
-            f"_Full silent test: Emails are BLOCKED._",
-            parse_mode="Markdown",
+            f"🧪 <b>TEST MODE — {SESSIONS[session_type]['label']} Session</b>\n"
+            f"<i>Full silent test: Emails are BLOCKED.</i>",
+            parse_mode="HTML",
         )
 
         await telegram_app.bot.send_message(chat_id, "⏳ Step 1/4 — Logging in & exporting CSV...")
@@ -251,11 +252,11 @@ async def run_test(session_type, chat_id):
         )
         await telegram_app.bot.send_message(
             chat_id,
-            f"✅ *CSV Export successful!*\n"
-            f"👥 Total users found: *{count}*\n"
-            f"📋 Columns: `{', '.join(headers)}`\n\n"
+            f"✅ <b>CSV Export successful!</b>\n"
+            f"👥 Total users found: <b>{count}</b>\n"
+            f"📋 Columns: <code>{', '.join(headers)}</code>\n\n"
             f"First 3 rows:\n{preview_text}",
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
 
         await telegram_app.bot.send_message(chat_id, "⏳ Step 2/4 — Creating 6-hour Zoom meeting (Silent)...")
@@ -266,10 +267,10 @@ async def run_test(session_type, chat_id):
 
         await telegram_app.bot.send_message(
             chat_id,
-            f"✅ *Test Import successful!*\n"
+            f"✅ <b>Test Import successful!</b>\n"
             f"👥 Imported: {imported_count}\n"
             f"🔗 {reg_url}",
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
 
         await telegram_app.bot.send_message(chat_id, "⏳ Step 4/4 — Deleting dummy meeting...")
@@ -277,24 +278,24 @@ async def run_test(session_type, chat_id):
 
         await telegram_app.bot.send_message(
             chat_id,
-            f"✅ *TEST COMPLETE — Everything works!*\n\n"
+            f"✅ <b>TEST COMPLETE — Everything works!</b>\n\n"
             f"✅ Market Spartans login → OK\n"
             f"✅ Strict Button Click → OK\n"
             f"✅ 6-Hour Meeting Created → OK\n"
             f"✅ Registrant Import → OK\n"
             f"✅ Dummy meeting deleted → OK\n\n"
-            f"_Ready for real runs at 8:30 AM & 4:30 PM IST_",
-            parse_mode="Markdown",
+            f"<i>Ready for real runs at 8:30 AM & 4:30 PM IST</i>",
+            parse_mode="HTML",
         )
 
     except Exception as e:
         logging.error(f"Test error [{session_type}]: {e}")
+        # Telegram will now safely print the raw Zoom error without crashing!
         await telegram_app.bot.send_message(
             chat_id,
-            f"❌ *Test failed!*\n\nError: `{str(e)}`",
-            parse_mode="Markdown",
+            f"❌ <b>Test failed!</b>\n\nError: <code>{str(e)}</code>",
+            parse_mode="HTML", 
         )
-
 
 # ── TELEGRAM ──────────────────────────────────────────────────────────────────
 async def send_confirmation(session_type):
