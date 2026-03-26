@@ -56,17 +56,32 @@ async def get_zoom_token():
         return r.json()["access_token"]
 
 
-async def create_zoom_meeting(session_type):
+async def create_zoom_meeting(session_type, is_test=False):
     token      = await get_zoom_token()
     today      = date.today().strftime("%Y-%m-%d")
     meet_time  = SESSIONS[session_type]["meeting_time"]
     start_time = f"{today}T{meet_time}+05:30"   # IST = UTC+5:30
+    
+    # Block emails if this is a test run
+    send_email = not is_test
 
     async with httpx.AsyncClient() as client:
         r = await client.post(
             "https://api.zoom.us/v2/users/me/meetings",
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json={"template_id": ZOOM_TEMPLATE_ID, "start_time": start_time, "type": 2},
+            json={
+                "template_id": ZOOM_TEMPLATE_ID, 
+                "topic": f"{SESSIONS[session_type]['label']} Session - {today}",
+                "agenda": "Welcome to our daily session! Please find your details below.", # Adds description
+                "start_time": start_time, 
+                "type": 2,
+                "duration": 360, # Forces 6-hour duration
+                "settings": {
+                    "registrants_email_notification": send_email,
+                    "meeting_authentication": False,
+                    "email_notification": True 
+                }
+            },
         )
         r.raise_for_status()
         data = r.json()
@@ -116,7 +131,6 @@ async def delete_zoom_meeting(meeting_id):
 # ── PLAYWRIGHT ────────────────────────────────────────────────────────────────
 async def export_csv(session_type):
     session = SESSIONS[session_type]
-    today   = date.today().strftime("%Y-%m-%d")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -138,8 +152,9 @@ async def export_csv(session_type):
             await page.goto(session["export_url"])
             await page.wait_for_load_state("networkidle")
 
+            # Strict mode fix: specifies the exact text of the button
             async with page.expect_download(timeout=120_000) as dl_info:
-                await page.locator('button[name="btnsavezoom"]').click()
+                await page.locator('button[name="btnsavezoom"]:has-text("Export for Zoom")').click()
 
             download = await dl_info.value
             tmp_path = tempfile.mktemp(suffix=".csv")
@@ -170,9 +185,10 @@ async def run_automation(session_type):
         csv_path = await export_csv(session_type)
 
         await telegram_app.bot.send_message(
-            TELEGRAM_CHAT_ID, "⏳ Step 2/3 — Creating Zoom meeting from template..."
+            TELEGRAM_CHAT_ID, "⏳ Step 2/3 — Creating 6-Hour Zoom meeting from template..."
         )
-        meeting_id, reg_url = await create_zoom_meeting(session_type)
+        # Live mode: Emails are active
+        meeting_id, reg_url = await create_zoom_meeting(session_type, is_test=False)
 
         await telegram_app.bot.send_message(
             TELEGRAM_CHAT_ID, "⏳ Step 3/3 — Importing registrants into Zoom..."
@@ -203,11 +219,11 @@ async def run_test(session_type, chat_id):
         await telegram_app.bot.send_message(
             chat_id,
             f"🧪 *TEST MODE — {SESSIONS[session_type]['label']} Session*\n"
-            f"_Registrants will NOT be imported. No emails sent._",
+            f"_Full silent test: Emails are BLOCKED._",
             parse_mode="Markdown",
         )
 
-        await telegram_app.bot.send_message(chat_id, "⏳ Step 1/3 — Logging in & exporting CSV...")
+        await telegram_app.bot.send_message(chat_id, "⏳ Step 1/4 — Logging in & exporting CSV...")
         csv_path = await export_csv(session_type)
         count, headers, preview = count_csv(csv_path)
 
@@ -223,25 +239,32 @@ async def run_test(session_type, chat_id):
             parse_mode="Markdown",
         )
 
-        await telegram_app.bot.send_message(chat_id, "⏳ Step 2/3 — Creating Zoom meeting...")
-        meeting_id, reg_url = await create_zoom_meeting(session_type)
+        await telegram_app.bot.send_message(chat_id, "⏳ Step 2/4 — Creating 6-hour Zoom meeting (Silent)...")
+        # Test mode: Emails blocked
+        meeting_id, reg_url = await create_zoom_meeting(session_type, is_test=True)
+        
+        await telegram_app.bot.send_message(chat_id, "⏳ Step 3/4 — Testing Registrant Import...")
+        imported_count = await import_registrants(meeting_id, csv_path)
+
         await telegram_app.bot.send_message(
             chat_id,
-            f"✅ *Zoom meeting created!*\n🔗 {reg_url}",
+            f"✅ *Test Import successful!*\n"
+            f"👥 Imported: {imported_count}\n"
+            f"🔗 {reg_url}",
             parse_mode="Markdown",
         )
 
-        await telegram_app.bot.send_message(chat_id, "⏳ Step 3/3 — Deleting dummy meeting...")
+        await telegram_app.bot.send_message(chat_id, "⏳ Step 4/4 — Deleting dummy meeting...")
         await delete_zoom_meeting(meeting_id)
 
         await telegram_app.bot.send_message(
             chat_id,
             f"✅ *TEST COMPLETE — Everything works!*\n\n"
             f"✅ Market Spartans login → OK\n"
-            f"✅ CSV export → OK ({count} users)\n"
-            f"✅ Zoom meeting creation → OK\n"
-            f"✅ Dummy meeting deleted → OK\n"
-            f"⏭️ Registrant import → Skipped (test mode)\n\n"
+            f"✅ Strict Button Click → OK\n"
+            f"✅ 6-Hour Meeting Created → OK\n"
+            f"✅ Registrant Import → OK\n"
+            f"✅ Dummy meeting deleted → OK\n\n"
             f"_Ready for real runs at 8:30 AM & 4:30 PM IST_",
             parse_mode="Markdown",
         )
