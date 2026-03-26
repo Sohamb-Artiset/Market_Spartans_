@@ -75,7 +75,8 @@ async def create_zoom_meeting(session_type, is_test=False):
                 "type": 2,
                 "duration": 360, 
                 "settings": {
-                    "approval_type": 0,  
+                    "approval_type": 0,      
+                    "registration_type": 2,  # 👈 CRITICAL FIX: Strictly forces Registration ON
                     "registrants_email_notification": send_email,
                     "meeting_authentication": False,
                     "email_notification": True 
@@ -85,7 +86,6 @@ async def create_zoom_meeting(session_type, is_test=False):
         r.raise_for_status()
         data = r.json()
         return data["id"], data.get("registration_url", "")
-
 
 async def import_registrants(meeting_id, csv_path):
     token       = await get_zoom_token()
@@ -101,8 +101,15 @@ async def import_registrants(meeting_id, csv_path):
                 if email:
                     name_parts = name.split(" ", 1)
                     first = name_parts[0] if name_parts else "User"
-                    last  = name_parts[1] if len(name_parts) > 1 else ""
-                    registrants.append({"first_name": first, "last_name": last, "email": email})
+                    
+                    # 👈 CRITICAL FIX: Create the base object with ONLY required fields
+                    person = {"first_name": first, "email": email}
+                    
+                    # Zoom STRICTLY rejects empty strings, so we only add last_name if it actually exists
+                    if len(name_parts) > 1 and name_parts[1].strip():
+                        person["last_name"] = name_parts[1].strip()
+                        
+                    registrants.append(person)
 
     if not registrants:
         raise ValueError("CSV has 0 valid registrants — aborting import.")
@@ -114,7 +121,7 @@ async def import_registrants(meeting_id, csv_path):
                 f"https://api.zoom.us/v2/meetings/{meeting_id}/batch_registrants", 
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
                 json={
-                    "auto_approve": True, # 👈 MANDATORY for Batch Registrants API
+                    "auto_approve": True,
                     "registrants": batch
                 },
             )
