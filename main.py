@@ -87,21 +87,24 @@ async def create_zoom_meeting(session_type, is_test=False):
         data = r.json()
         return data["id"], data.get("registration_url", "")
 
-
 async def import_registrants(meeting_id, csv_path):
     token       = await get_zoom_token()
     registrants = []
 
     with open(csv_path, newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
+        # Using standard csv.reader since the file has no headers
+        reader = csv.reader(f)
         for row in reader:
-            email = next((v for k, v in row.items() if 'email' in k.lower()), "").strip()
-            name  = next((v for k, v in row.items() if 'name' in k.lower()), "").strip()
-            if email:
-                name_parts = name.split(" ", 1)
-                first = name_parts[0] if name_parts else "User"
-                last  = name_parts[1] if len(name_parts) > 1 else ""
-                registrants.append({"first_name": first, "last_name": last, "email": email})
+            # Ensure the row actually has at least 2 columns to avoid index errors
+            if len(row) >= 2:
+                email = row[0].strip()
+                name  = row[1].strip()
+                
+                if email:
+                    name_parts = name.split(" ", 1)
+                    first = name_parts[0] if name_parts else "User"
+                    last  = name_parts[1] if len(name_parts) > 1 else ""
+                    registrants.append({"first_name": first, "last_name": last, "email": email})
 
     if not registrants:
         raise ValueError("CSV has 0 valid registrants — aborting import.")
@@ -117,7 +120,6 @@ async def import_registrants(meeting_id, csv_path):
             r.raise_for_status()
 
     return len(registrants)
-
 
 async def delete_zoom_meeting(meeting_id):
     token = await get_zoom_token()
