@@ -41,8 +41,7 @@ SESSIONS = {
 }
 
 telegram_app = None
-pending_jobs  = {}   # session_type -> asyncio.Task (auto-skip timer)
-
+pending_jobs  = {}   
 
 # ── ZOOM API ──────────────────────────────────────────────────────────────────
 async def get_zoom_token():
@@ -60,9 +59,8 @@ async def create_zoom_meeting(session_type, is_test=False):
     token      = await get_zoom_token()
     today      = date.today().strftime("%Y-%m-%d")
     meet_time  = SESSIONS[session_type]["meeting_time"]
-    start_time = f"{today}T{meet_time}+05:30"   # IST = UTC+5:30
+    start_time = f"{today}T{meet_time}+05:30"   
     
-    # Block emails if this is a test run
     send_email = not is_test
 
     async with httpx.AsyncClient() as client:
@@ -87,6 +85,7 @@ async def create_zoom_meeting(session_type, is_test=False):
         r.raise_for_status()
         data = r.json()
         return data["id"], data.get("registration_url", "")
+
 
 async def import_registrants(meeting_id, csv_path):
     token       = await get_zoom_token()
@@ -114,12 +113,16 @@ async def import_registrants(meeting_id, csv_path):
             r = await client.post(
                 f"https://api.zoom.us/v2/meetings/{meeting_id}/batch_registrants", 
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                json={"registrants": batch},
+                json={
+                    "auto_approve": True, # 👈 MANDATORY for Batch Registrants API
+                    "registrants": batch
+                },
             )
             r.raise_for_status()
 
     return len(registrants)
-    
+
+
 async def delete_zoom_meeting(meeting_id):
     token = await get_zoom_token()
     async with httpx.AsyncClient() as client:
@@ -177,10 +180,9 @@ def count_csv(csv_path):
         reader = csv.reader(f)
         for row in reader:
             if len(row) >= 2:
-                # Store as a dict just to match your existing preview logic format
                 rows.append({"email": row[0].strip(), "name": row[1].strip()})
                 
-    headers = ["Email", "Name"] # Manually set the headers for the Telegram message
+    headers = ["Email", "Name"] 
     return len(rows), headers, rows[:3]
 
 
@@ -195,7 +197,6 @@ async def run_automation(session_type):
         await telegram_app.bot.send_message(
             TELEGRAM_CHAT_ID, "⏳ Step 2/3 — Creating 6-Hour Zoom meeting from template..."
         )
-        # Live mode: Emails are active
         meeting_id, reg_url = await create_zoom_meeting(session_type, is_test=False)
 
         await telegram_app.bot.send_message(
@@ -248,7 +249,6 @@ async def run_test(session_type, chat_id):
         )
 
         await telegram_app.bot.send_message(chat_id, "⏳ Step 2/4 — Creating 6-hour Zoom meeting (Silent)...")
-        # Test mode: Emails blocked
         meeting_id, reg_url = await create_zoom_meeting(session_type, is_test=True)
         
         await telegram_app.bot.send_message(chat_id, "⏳ Step 3/4 — Testing Registrant Import...")
