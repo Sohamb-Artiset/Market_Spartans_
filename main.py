@@ -72,11 +72,12 @@ async def create_zoom_meeting(session_type, is_test=False):
             json={
                 "template_id": ZOOM_TEMPLATE_ID, 
                 "topic": f"{SESSIONS[session_type]['label']} Session - {today}",
-                "agenda": "Welcome to our daily session! Please find your details below.", # Adds description
+                "agenda": "Welcome to our daily session! Please find your details below.", 
                 "start_time": start_time, 
                 "type": 2,
-                "duration": 360, # Forces 6-hour duration
+                "duration": 360, 
                 "settings": {
+                    "approval_type": 0,  # 👈 CRITICAL FIX: Forces registration to be ON (Auto-Approve)
                     "registrants_email_notification": send_email,
                     "meeting_authentication": False,
                     "email_notification": True 
