@@ -112,25 +112,25 @@ async def import_registrants(meeting_id, csv_path):
     if not registrants:
         raise ValueError("CSV has 0 valid registrants — aborting import.")
 
+    success_count = 0
     async with httpx.AsyncClient() as client:
-        for i in range(0, len(registrants), 30):
-            batch = registrants[i : i + 30]
+        # Loop through and add them one by one to trigger the emails
+        for person in registrants:
             r = await client.post(
-                f"https://api.zoom.us/v2/meetings/{meeting_id}/batch_registrants", 
+                f"https://api.zoom.us/v2/meetings/{meeting_id}/registrants", # 👈 CRITICAL FIX: Standard endpoint
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                json={
-                    "auto_approve": True,
-                    "registrants": batch
-                },
+                json=person,
             )
             
-            # 👈 CRITICAL DIAGNOSTIC FIX: Stop hiding the Zoom error message!
-            if r.status_code >= 400:
-                raise ValueError(f"Zoom Error {r.status_code}: {r.text}")
+            if r.status_code < 400:
+                success_count += 1
+            else:
+                logging.error(f"Zoom Error for {person['email']}: {r.text}")
                 
-            r.raise_for_status()
+            # A tiny pause ensures we never hit Zoom's API rate limits
+            await asyncio.sleep(0.1)
 
-    return len(registrants)
+    return success_count
 
 
 async def delete_zoom_meeting(meeting_id):
