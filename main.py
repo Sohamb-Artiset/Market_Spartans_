@@ -40,6 +40,10 @@ SESSIONS = {
     },
 }
 
+MEETING_AGENDA = """Zoom ke इस Social Gathering में, हम कोई ट्रेडिंग सुझाव/Tips/Advice नहीं दे रहे हैं, इस group से कोई भी आपको investment proposals or trading tips देने के लिए authorized SEBI Registered नहीं है. इस gathering का उद्देश्य moves of stock market पर केवल चर्चा है। शेयर बाजार को समझना एक सामूहिक प्रयास है और यहां कोई भी एंकर या मेंटर नहीं है, यहाँ तक की मंगेश काले भी नहीं। शेयर बाजार में कोई भी ट्रेड करना या ना करना आपकी खुद की जिम्मेदारी होगी। आपके ट्रेडों के परिणाम के लिए आपके अलावा कोई और जिम्मेदार नहीं होगा क्योंकि यह आपका अपना निर्णय होगा।
+
+ये सभी बातें मुझे समझ आ गई है, और मै ऊपर लिखी बातो को सहमती दर्शाते हुए अपने स्वयं के निर्णय से इस मीटिंग में जॉइन हो रहा हू |"""
+
 telegram_app = None
 pending_jobs  = {}   
 
@@ -58,7 +62,7 @@ async def get_zoom_token():
 async def create_zoom_meeting(session_type, is_test=False):
     token      = await get_zoom_token()
     
-    # 👈 CRITICAL FIX: Forces IST Timezone regardless of server location
+    # Forces IST Timezone regardless of server location
     ist        = timezone(timedelta(hours=5, minutes=30))
     today      = datetime.now(ist).strftime("%Y-%m-%d")
     
@@ -74,7 +78,7 @@ async def create_zoom_meeting(session_type, is_test=False):
             json={
                 "template_id": ZOOM_TEMPLATE_ID, 
                 "topic": f"{SESSIONS[session_type]['label']} Session - {today}",
-                "agenda": "Welcome to our daily session! Please find your details below.", 
+                "agenda": MEETING_AGENDA,  # 👈 CRITICAL FIX: Injects your full disclaimer here
                 "start_time": start_time, 
                 "type": 2,
                 "duration": 360, 
@@ -105,7 +109,7 @@ async def import_registrants(meeting_id, csv_path):
                 
                 if email:
                     name_parts = name.split(" ", 1)
-                    # 👈 CRITICAL FIX: Enforces "User" if name is left completely blank
+                    # Enforces "User" if name is left completely blank
                     first = name_parts[0].strip() if name_parts and name_parts[0].strip() else "User"
                     
                     person = {"first_name": first, "email": email}
@@ -236,7 +240,7 @@ async def run_automation(session_type):
             parse_mode="HTML", 
         )
     finally:
-        # 👈 CRITICAL FIX: Zombie File Storage Leak cleanup
+        # Zombie File Storage Leak cleanup
         if csv_path and os.path.exists(csv_path):
             os.remove(csv_path)
 
@@ -305,7 +309,7 @@ async def run_test(session_type, chat_id):
             parse_mode="HTML", 
         )
     finally:
-        # 👈 CRITICAL FIX: Zombie File Storage Leak cleanup
+        # Zombie File Storage Leak cleanup
         if csv_path and os.path.exists(csv_path):
             os.remove(csv_path)
 
