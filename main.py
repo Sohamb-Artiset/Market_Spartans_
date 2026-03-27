@@ -5,7 +5,7 @@ import csv
 import tempfile
 import logging
 import signal
-from datetime import date
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -57,7 +57,11 @@ async def get_zoom_token():
 
 async def create_zoom_meeting(session_type, is_test=False):
     token      = await get_zoom_token()
-    today      = date.today().strftime("%Y-%m-%d")
+    
+    # 👈 CRITICAL FIX: Forces IST Timezone regardless of server location
+    ist        = timezone(timedelta(hours=5, minutes=30))
+    today      = datetime.now(ist).strftime("%Y-%m-%d")
+    
     meet_time  = SESSIONS[session_type]["meeting_time"]
     start_time = f"{today}T{meet_time}+05:30"   
     
@@ -76,7 +80,7 @@ async def create_zoom_meeting(session_type, is_test=False):
                 "duration": 360, 
                 "settings": {
                     "approval_type": 0,      
-                    "registration_type": 2,  # 👈 CRITICAL FIX: Strictly forces Registration ON
+                    "registration_type": 2,  
                     "registrants_email_notification": send_email,
                     "meeting_authentication": False,
                     "email_notification": True 
@@ -86,6 +90,7 @@ async def create_zoom_meeting(session_type, is_test=False):
         r.raise_for_status()
         data = r.json()
         return data["id"], data.get("registration_url", "")
+
 
 async def import_registrants(meeting_id, csv_path):
     token       = await get_zoom_token()
@@ -100,7 +105,8 @@ async def import_registrants(meeting_id, csv_path):
                 
                 if email:
                     name_parts = name.split(" ", 1)
-                    first = name_parts[0] if name_parts else "User"
+                    # 👈 CRITICAL FIX: Enforces "User" if name is left completely blank
+                    first = name_parts[0].strip() if name_parts and name_parts[0].strip() else "User"
                     
                     person = {"first_name": first, "email": email}
                     
@@ -114,10 +120,9 @@ async def import_registrants(meeting_id, csv_path):
 
     success_count = 0
     async with httpx.AsyncClient() as client:
-        # Loop through and add them one by one to trigger the emails
         for person in registrants:
             r = await client.post(
-                f"https://api.zoom.us/v2/meetings/{meeting_id}/registrants", # 👈 CRITICAL FIX: Standard endpoint
+                f"https://api.zoom.us/v2/meetings/{meeting_id}/registrants", 
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
                 json=person,
             )
@@ -127,7 +132,6 @@ async def import_registrants(meeting_id, csv_path):
             else:
                 logging.error(f"Zoom Error for {person['email']}: {r.text}")
                 
-            # A tiny pause ensures we never hit Zoom's API rate limits
             await asyncio.sleep(0.1)
 
     return success_count
@@ -197,8 +201,8 @@ def count_csv(csv_path):
 
 
 # ── AUTOMATION RUNNER ─────────────────────────────────────────────────────────
-# ── AUTOMATION RUNNER ─────────────────────────────────────────────────────────
 async def run_automation(session_type):
+    csv_path = None
     try:
         await telegram_app.bot.send_message(
             TELEGRAM_CHAT_ID, "⏳ Step 1/3 — Logging in & exporting users from Market Spartans..."
@@ -221,7 +225,7 @@ async def run_automation(session_type):
             f"👥 {count} registrants imported\n\n"
             f"📋 <b>Registration Link:</b>\n{reg_url}\n\n"
             f"👆 Copy & paste this to the WhatsApp group",
-            parse_mode="HTML", # 👈 CRITICAL FIX: Changed to HTML
+            parse_mode="HTML",
         )
 
     except Exception as e:
@@ -229,12 +233,17 @@ async def run_automation(session_type):
         await telegram_app.bot.send_message(
             TELEGRAM_CHAT_ID,
             f"❌ <b>Automation failed!</b>\n\nError: <code>{str(e)}</code>\n\nPlease run manually today.",
-            parse_mode="HTML", # 👈 CRITICAL FIX: Changed to HTML
+            parse_mode="HTML", 
         )
+    finally:
+        # 👈 CRITICAL FIX: Zombie File Storage Leak cleanup
+        if csv_path and os.path.exists(csv_path):
+            os.remove(csv_path)
 
 
 # ── TEST RUNNER ───────────────────────────────────────────────────────────────
 async def run_test(session_type, chat_id):
+    csv_path = None
     try:
         await telegram_app.bot.send_message(
             chat_id,
@@ -290,12 +299,16 @@ async def run_test(session_type, chat_id):
 
     except Exception as e:
         logging.error(f"Test error [{session_type}]: {e}")
-        # Telegram will now safely print the raw Zoom error without crashing!
         await telegram_app.bot.send_message(
             chat_id,
             f"❌ <b>Test failed!</b>\n\nError: <code>{str(e)}</code>",
             parse_mode="HTML", 
         )
+    finally:
+        # 👈 CRITICAL FIX: Zombie File Storage Leak cleanup
+        if csv_path and os.path.exists(csv_path):
+            os.remove(csv_path)
+
 
 # ── TELEGRAM ──────────────────────────────────────────────────────────────────
 async def send_confirmation(session_type):
