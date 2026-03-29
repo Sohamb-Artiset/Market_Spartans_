@@ -29,14 +29,14 @@ TELEGRAM_CHAT_ID   = int(os.getenv("TELEGRAM_CHAT_ID"))
 SESSIONS = {
     "morning": {
         "label":        "🌅 Morning",
-        "zoom_topic":   "Options Learnings with Mangesh Kale", # 👈 NEW: Specific Zoom Title
+        "zoom_topic":   "Options Learnings with Mangesh Kale", 
         "site_url":     os.getenv("MORNING_SITE_URL"),
         "export_url":   os.getenv("MORNING_EXPORT_URL"),
         "meeting_time": os.getenv("MORNING_MEETING_TIME"),
     },
     "evening": {
         "label":        "🌆 Evening",
-        "zoom_topic":   "Forex with Mangesh Kale", # 👈 NEW: Specific Zoom Title
+        "zoom_topic":   "Forex with Mangesh Kale", 
         "site_url":     os.getenv("EVENING_SITE_URL"),
         "export_url":   os.getenv("EVENING_EXPORT_URL"),
         "meeting_time": os.getenv("EVENING_MEETING_TIME"),
@@ -87,7 +87,7 @@ async def create_zoom_meeting(session_type, is_test=False):
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             json={
                 "template_id": ZOOM_TEMPLATE_ID, 
-                "topic": f"{SESSIONS[session_type]['zoom_topic']} - {today}", # 👈 FIX: Uses the new custom title
+                "topic": f"{SESSIONS[session_type]['zoom_topic']} - {today}", 
                 "agenda": MEETING_AGENDA,  
                 "start_time": start_time, 
                 "type": 2,
@@ -366,23 +366,24 @@ async def send_confirmation(session_type):
     if pre_approved[session_type]:
         await telegram_app.bot.send_message(
             TELEGRAM_CHAT_ID,
-            f"⚙️ <b>Starting your pre-approved {session['label']} session now...</b>\nSit back and relax!",
+            f"⚡ <b>Kicking off your pre-approved {session['label']} session...</b>\nI've got it from here!",
             parse_mode="HTML"
         )
         asyncio.create_task(run_automation(session_type))
         return
 
-    # Standard Fallback logic if NOT pre-approved
+    # Informal Professional Buttons
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Yes, Run It",  callback_data=f"yes_{session_type}"),
-        InlineKeyboardButton("❌ Skip Today",   callback_data=f"no_{session_type}"),
+        InlineKeyboardButton("✅ Yes, run it",  callback_data=f"yes_{session_type}"),
+        InlineKeyboardButton("⏭️ Skip for today",   callback_data=f"no_{session_type}"),
     ]])
 
+    # Informal Professional Prompt
     await telegram_app.bot.send_message(
         TELEGRAM_CHAT_ID,
-        f"<b>{session['label']} session automation is ready!</b>\n" 
-        f"Should I run it now?\n\n"
-        f"<i>(Auto-skips in 15 minutes if no response)</i>",
+        f"⚙️ <b>{session['label']} session is queued up!</b>\n\n" 
+        f"Should I go ahead and run the automation now?\n\n"
+        f"<i>(This will auto-skip in 15 minutes if I don't hear from you.)</i>",
         reply_markup=keyboard,
         parse_mode="HTML", 
     )
@@ -391,12 +392,14 @@ async def send_confirmation(session_type):
         try:
             await asyncio.sleep(15 * 60)
             logging.info(f"Auto-skipping {session_type} — no response in 15 min")
+            # Informal Professional Timeout
             await telegram_app.bot.send_message(
                 TELEGRAM_CHAT_ID,
-                f"⏰ No response — {session['label']} session auto-skipped for today.",
+                f"⏳ <b>Auto-skipped</b> — I didn't get a response, so I skipped the {session['label']} session for today.",
+                parse_mode="HTML"
             )
         except asyncio.CancelledError:
-            pass # Fails gracefully if user clicked a button and cancelled the skip
+            pass 
 
     task = asyncio.create_task(auto_skip())
     pending_jobs[session_type] = task
@@ -412,7 +415,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if target == "both":
             pre_approved["morning"] = True
             pre_approved["evening"] = True
-            await query.edit_message_text("✅ <b>Both Morning & Evening</b> sessions are pre-approved for today. I will handle them automatically!", parse_mode="HTML")
+            await query.edit_message_text("✅ <b>Both Morning & Evening</b> sessions are pre-approved for today. I'll handle them automatically!", parse_mode="HTML")
         elif target == "morning":
             pre_approved["morning"] = True
             await query.edit_message_text("✅ <b>Morning</b> session pre-approved for today!", parse_mode="HTML")
@@ -421,20 +424,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("✅ <b>Evening</b> session pre-approved for today!", parse_mode="HTML")
         return
 
-    # Standard yes/no logic
     action, session_type = query.data.split("_", 1)
 
     if session_type in pending_jobs:
         pending_jobs[session_type].cancel()
         del pending_jobs[session_type]
 
+    # Informal Professional Click Responses
     if action == "yes":
-        await query.edit_message_text("👍 Got it! Starting automation now...")
+        await query.edit_message_text("🚀 <b>Got it!</b> Starting the automation right now...", parse_mode="HTML")
         asyncio.create_task(run_automation(session_type))
     else:
-        await query.edit_message_text("👍 Skipped for today. See you next session!")
+        await query.edit_message_text("⏭️ <b>Skipped.</b> I'll leave this session alone for today.", parse_mode="HTML")
 
 
+# 👈 FIX: The missing test_command was re-added here!
 async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != TELEGRAM_CHAT_ID:
         return
