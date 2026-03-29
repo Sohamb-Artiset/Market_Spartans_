@@ -5,6 +5,7 @@ import csv
 import tempfile
 import logging
 import signal
+import html  
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -28,12 +29,14 @@ TELEGRAM_CHAT_ID   = int(os.getenv("TELEGRAM_CHAT_ID"))
 SESSIONS = {
     "morning": {
         "label":        "🌅 Morning",
+        "zoom_topic":   "Options Learnings with Mangesh Kale", # 👈 NEW: Specific Zoom Title
         "site_url":     os.getenv("MORNING_SITE_URL"),
         "export_url":   os.getenv("MORNING_EXPORT_URL"),
         "meeting_time": os.getenv("MORNING_MEETING_TIME"),
     },
     "evening": {
         "label":        "🌆 Evening",
+        "zoom_topic":   "Forex with Mangesh Kale", # 👈 NEW: Specific Zoom Title
         "site_url":     os.getenv("EVENING_SITE_URL"),
         "export_url":   os.getenv("EVENING_EXPORT_URL"),
         "meeting_time": os.getenv("EVENING_MEETING_TIME"),
@@ -45,7 +48,15 @@ MEETING_AGENDA = """Zoom ke इस Social Gathering में, हम कोई 
 ये सभी बातें मुझे समझ आ गई है, और मै ऊपर लिखी बातो को सहमती दर्शाते हुए अपने स्वयं के निर्णय से इस मीटिंग में जॉइन हो रहा हू |"""
 
 telegram_app = None
-pending_jobs  = {}   
+pending_jobs = {}   
+
+# ── PRE-APPROVAL STATE ────────────────────────────────────────────────────────
+pre_approved = {"morning": False, "evening": False}
+
+async def reset_pre_approvals():
+    global pre_approved
+    pre_approved = {"morning": False, "evening": False}
+    logging.info("Midnight reset: Pre-approvals wiped for the new day.")
 
 # ── ZOOM API ──────────────────────────────────────────────────────────────────
 async def get_zoom_token():
@@ -62,7 +73,6 @@ async def get_zoom_token():
 async def create_zoom_meeting(session_type, is_test=False):
     token      = await get_zoom_token()
     
-    # Forces IST Timezone regardless of server location
     ist        = timezone(timedelta(hours=5, minutes=30))
     today      = datetime.now(ist).strftime("%Y-%m-%d")
     
@@ -77,8 +87,8 @@ async def create_zoom_meeting(session_type, is_test=False):
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             json={
                 "template_id": ZOOM_TEMPLATE_ID, 
-                "topic": f"{SESSIONS[session_type]['label']} Session - {today}",
-                "agenda": MEETING_AGENDA,  # 👈 CRITICAL FIX: Injects your full disclaimer here
+                "topic": f"{SESSIONS[session_type]['zoom_topic']} - {today}", # 👈 FIX: Uses the new custom title
+                "agenda": MEETING_AGENDA,  
                 "start_time": start_time, 
                 "type": 2,
                 "duration": 360, 
@@ -109,7 +119,6 @@ async def import_registrants(meeting_id, csv_path):
                 
                 if email:
                     name_parts = name.split(" ", 1)
-                    # Enforces "User" if name is left completely blank
                     first = name_parts[0].strip() if name_parts and name_parts[0].strip() else "User"
                     
                     person = {"first_name": first, "email": email}
@@ -234,13 +243,13 @@ async def run_automation(session_type):
 
     except Exception as e:
         logging.error(f"Automation error [{session_type}]: {e}")
+        safe_error = html.escape(str(e)) 
         await telegram_app.bot.send_message(
             TELEGRAM_CHAT_ID,
-            f"❌ <b>Automation failed!</b>\n\nError: <code>{str(e)}</code>\n\nPlease run manually today.",
+            f"❌ <b>Automation failed!</b>\n\nError: <code>{safe_error}</code>\n\nPlease run manually today.",
             parse_mode="HTML", 
         )
     finally:
-        # Zombie File Storage Leak cleanup
         if csv_path and os.path.exists(csv_path):
             os.remove(csv_path)
 
@@ -261,7 +270,7 @@ async def run_test(session_type, chat_id):
         count, headers, preview = count_csv(csv_path)
 
         preview_text = "\n".join(
-            [f"  {i+1}. {list(r.values())[:2]}" for i, r in enumerate(preview)]
+            [f"  {i+1}. {html.escape(str(list(r.values())[:2]))}" for i, r in enumerate(preview)]
         )
         await telegram_app.bot.send_message(
             chat_id,
@@ -303,20 +312,67 @@ async def run_test(session_type, chat_id):
 
     except Exception as e:
         logging.error(f"Test error [{session_type}]: {e}")
+        safe_error = html.escape(str(e)) 
         await telegram_app.bot.send_message(
             chat_id,
-            f"❌ <b>Test failed!</b>\n\nError: <code>{str(e)}</code>",
+            f"❌ <b>Test failed!</b>\n\nError: <code>{safe_error}</code>",
             parse_mode="HTML", 
         )
     finally:
-        # Zombie File Storage Leak cleanup
         if csv_path and os.path.exists(csv_path):
             os.remove(csv_path)
 
 
-# ── TELEGRAM ──────────────────────────────────────────────────────────────────
+# ── TELEGRAM HANDLERS ─────────────────────────────────────────────────────────
+
+async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the /setup command for fast-pass pre-approvals."""
+    if update.effective_chat.id != TELEGRAM_CHAT_ID: return
+
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now = datetime.now(ist)
+    
+    # Converts time to a float (e.g., 8:30 AM = 8.5) for easy checking
+    time_val = now.hour + now.minute / 60.0
+
+    if time_val < 8.5:
+        # Before 8:30 AM: Show all options
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🌅 Pre-approve Morning Only", callback_data="pre_morning")],
+            [InlineKeyboardButton("🌆 Pre-approve Evening Only", callback_data="pre_evening")],
+            [InlineKeyboardButton("✅ Pre-approve BOTH Sessions", callback_data="pre_both")]
+        ])
+        await update.message.reply_text("⚡ <b>Fast-Pass Setup</b>\nSelect the sessions you want to pre-approve for today:", reply_markup=keyboard, parse_mode="HTML")
+    
+    elif time_val < 16.5:
+        # Between 8:30 AM and 4:30 PM: Morning is gone, only show evening
+        if pre_approved["evening"]:
+            await update.message.reply_text("✅ Your Evening session is already pre-approved for today!")
+            return
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🌆 Pre-approve Evening", callback_data="pre_evening")]
+        ])
+        await update.message.reply_text("⚡ <b>Fast-Pass Setup</b>\nMorning session has passed. Pre-approve the evening session?", reply_markup=keyboard, parse_mode="HTML")
+    
+    else:
+        # After 4:30 PM
+        await update.message.reply_text("All sessions for today have already passed. I'll reset the board at midnight!")
+
+
 async def send_confirmation(session_type):
-    session  = SESSIONS[session_type]
+    session = SESSIONS[session_type]
+    
+    if pre_approved[session_type]:
+        await telegram_app.bot.send_message(
+            TELEGRAM_CHAT_ID,
+            f"⚙️ <b>Starting your pre-approved {session['label']} session now...</b>\nSit back and relax!",
+            parse_mode="HTML"
+        )
+        asyncio.create_task(run_automation(session_type))
+        return
+
+    # Standard Fallback logic if NOT pre-approved
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Yes, Run It",  callback_data=f"yes_{session_type}"),
         InlineKeyboardButton("❌ Skip Today",   callback_data=f"no_{session_type}"),
@@ -324,20 +380,23 @@ async def send_confirmation(session_type):
 
     await telegram_app.bot.send_message(
         TELEGRAM_CHAT_ID,
-        f"{session['label']} session automation is ready!\n"
+        f"<b>{session['label']} session automation is ready!</b>\n" 
         f"Should I run it now?\n\n"
-        f"_(Auto-skips in 15 minutes if no response)_",
+        f"<i>(Auto-skips in 15 minutes if no response)</i>",
         reply_markup=keyboard,
-        parse_mode="Markdown",
+        parse_mode="HTML", 
     )
 
     async def auto_skip():
-        await asyncio.sleep(15 * 60)
-        logging.info(f"Auto-skipping {session_type} — no response in 15 min")
-        await telegram_app.bot.send_message(
-            TELEGRAM_CHAT_ID,
-            f"⏰ No response — {session['label']} session auto-skipped for today.",
-        )
+        try:
+            await asyncio.sleep(15 * 60)
+            logging.info(f"Auto-skipping {session_type} — no response in 15 min")
+            await telegram_app.bot.send_message(
+                TELEGRAM_CHAT_ID,
+                f"⏰ No response — {session['label']} session auto-skipped for today.",
+            )
+        except asyncio.CancelledError:
+            pass # Fails gracefully if user clicked a button and cancelled the skip
 
     task = asyncio.create_task(auto_skip())
     pending_jobs[session_type] = task
@@ -347,6 +406,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
+    if query.data.startswith("pre_"):
+        target = query.data.split("_")[1]
+        
+        if target == "both":
+            pre_approved["morning"] = True
+            pre_approved["evening"] = True
+            await query.edit_message_text("✅ <b>Both Morning & Evening</b> sessions are pre-approved for today. I will handle them automatically!", parse_mode="HTML")
+        elif target == "morning":
+            pre_approved["morning"] = True
+            await query.edit_message_text("✅ <b>Morning</b> session pre-approved for today!", parse_mode="HTML")
+        elif target == "evening":
+            pre_approved["evening"] = True
+            await query.edit_message_text("✅ <b>Evening</b> session pre-approved for today!", parse_mode="HTML")
+        return
+
+    # Standard yes/no logic
     action, session_type = query.data.split("_", 1)
 
     if session_type in pending_jobs:
@@ -374,10 +449,15 @@ async def main():
     global telegram_app
 
     telegram_app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    telegram_app.add_handler(CommandHandler("setup", setup_command)) 
     telegram_app.add_handler(CallbackQueryHandler(button_handler))
     telegram_app.add_handler(CommandHandler("test", test_command))
 
     scheduler = AsyncIOScheduler(timezone="Asia/Kolkata")
+    
+    scheduler.add_job(reset_pre_approvals, "cron", hour=0, minute=0)
+    
     scheduler.add_job(send_confirmation, "cron", hour=8,  minute=30, args=["morning"])
     scheduler.add_job(send_confirmation, "cron", hour=16, minute=30, args=["evening"])
     scheduler.start()
