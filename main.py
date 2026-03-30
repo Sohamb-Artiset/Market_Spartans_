@@ -93,7 +93,7 @@ async def create_zoom_meeting(session_type, is_test=False):
                 "type": 2,
                 "duration": 360, 
                 "settings": {
-                    "approval_type": 0,      
+                    "approval_type": 0,  # 0 = Auto-Approve (Allows CSV users to get emails instantly)    
                     "registration_type": 2,  
                     "registrants_email_notification": send_email,
                     "meeting_authentication": False,
@@ -132,6 +132,8 @@ async def import_registrants(meeting_id, csv_path):
         raise ValueError("CSV has 0 valid registrants — aborting import.")
 
     success_count = 0
+    failed_emails = [] 
+    
     async with httpx.AsyncClient() as client:
         for person in registrants:
             r = await client.post(
@@ -144,10 +146,24 @@ async def import_registrants(meeting_id, csv_path):
                 success_count += 1
             else:
                 logging.error(f"Zoom Error for {person['email']}: {r.text}")
+                failed_emails.append(person['email'])
                 
             await asyncio.sleep(0.1)
 
-    return success_count
+    return success_count, failed_emails
+
+
+async def lock_meeting_registration(meeting_id):
+    """Locks the meeting to manual approval after CSV users are safely imported."""
+    token = await get_zoom_token()
+    async with httpx.AsyncClient() as client:
+        r = await client.patch(
+            f"https://api.zoom.us/v2/meetings/{meeting_id}",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"settings": {"approval_type": 1}} # 1 = Manual Approval
+        )
+        if r.status_code >= 400:
+            logging.error(f"Failed to lock meeting: {r.text}")
 
 
 async def delete_zoom_meeting(meeting_id):
@@ -218,28 +234,36 @@ async def run_automation(session_type):
     csv_path = None
     try:
         await telegram_app.bot.send_message(
-            TELEGRAM_CHAT_ID, "⏳ Step 1/3 — Logging in & exporting users from Market Spartans..."
+            TELEGRAM_CHAT_ID, "⏳ Step 1/4 — Logging in & exporting users from Market Spartans..."
         )
         csv_path = await export_csv(session_type)
 
         await telegram_app.bot.send_message(
-            TELEGRAM_CHAT_ID, "⏳ Step 2/3 — Creating 6-Hour Zoom meeting from template..."
+            TELEGRAM_CHAT_ID, "⏳ Step 2/4 — Creating 6-Hour Zoom meeting from template..."
         )
         meeting_id, reg_url = await create_zoom_meeting(session_type, is_test=False)
 
         await telegram_app.bot.send_message(
-            TELEGRAM_CHAT_ID, "⏳ Step 3/3 — Importing registrants into Zoom..."
+            TELEGRAM_CHAT_ID, "⏳ Step 3/4 — Importing registrants into Zoom..."
         )
-        count = await import_registrants(meeting_id, csv_path)
+        count, failed_emails = await import_registrants(meeting_id, csv_path)
 
         await telegram_app.bot.send_message(
-            TELEGRAM_CHAT_ID,
-            f"✅ All done!\n"
-            f"👥 {count} registrants imported\n\n"
-            f"📋 <b>Registration Link:</b>\n{reg_url}\n\n"
-            f"👆 Copy & paste this to the WhatsApp group",
-            parse_mode="HTML",
+            TELEGRAM_CHAT_ID, "⏳ Step 4/4 — Locking registration for WhatsApp link..."
         )
+        await lock_meeting_registration(meeting_id)
+
+        # 👈 FINAL PROFESSIONAL REPORT
+        report_text = f"✅ <b>{SESSIONS[session_type]['label']} Session complete!</b>\n\n👥 <b>Success:</b> {count} users added."
+        if failed_emails:
+            failed_list_formatted = "\n".join([f"• <code>{email}</code>" for email in failed_emails])
+            report_text += f"\n❌ <b>Failed:</b> {len(failed_emails)} users rejected.\n\n"
+            report_text += f"📋 <b>Rejected emails:</b>\n{failed_list_formatted}\n\n"
+            report_text += "👆 Copy & register these manually"
+
+        report_text += f"\n\n🔗 <b>WhatsApp Link (Requires Approval):</b>\n{reg_url}"
+
+        await telegram_app.bot.send_message(TELEGRAM_CHAT_ID, report_text, parse_mode="HTML", disable_web_page_preview=True)
 
     except Exception as e:
         logging.error(f"Automation error [{session_type}]: {e}")
@@ -265,7 +289,7 @@ async def run_test(session_type, chat_id):
             parse_mode="HTML",
         )
 
-        await telegram_app.bot.send_message(chat_id, "⏳ Step 1/4 — Logging in & exporting CSV...")
+        await telegram_app.bot.send_message(chat_id, "⏳ Step 1/5 — Logging in & exporting CSV...")
         csv_path = await export_csv(session_type)
         count, headers, preview = count_csv(csv_path)
 
@@ -281,21 +305,25 @@ async def run_test(session_type, chat_id):
             parse_mode="HTML",
         )
 
-        await telegram_app.bot.send_message(chat_id, "⏳ Step 2/4 — Creating 6-hour Zoom meeting (Silent)...")
+        await telegram_app.bot.send_message(chat_id, "⏳ Step 2/5 — Creating 6-hour Zoom meeting (Silent)...")
         meeting_id, reg_url = await create_zoom_meeting(session_type, is_test=True)
         
-        await telegram_app.bot.send_message(chat_id, "⏳ Step 3/4 — Testing Registrant Import...")
-        imported_count = await import_registrants(meeting_id, csv_path)
+        await telegram_app.bot.send_message(chat_id, "⏳ Step 3/5 — Testing Registrant Import...")
+        imported_count, failed_emails = await import_registrants(meeting_id, csv_path)
+
+        await telegram_app.bot.send_message(chat_id, "⏳ Step 4/5 — Testing WhatsApp Link Lock...")
+        await lock_meeting_registration(meeting_id)
 
         await telegram_app.bot.send_message(
             chat_id,
             f"✅ <b>Test Import successful!</b>\n"
             f"👥 Imported: {imported_count}\n"
+            f"❌ Failed: {len(failed_emails)}\n"
             f"🔗 {reg_url}",
             parse_mode="HTML",
         )
 
-        await telegram_app.bot.send_message(chat_id, "⏳ Step 4/4 — Deleting dummy meeting...")
+        await telegram_app.bot.send_message(chat_id, "⏳ Step 5/5 — Deleting dummy meeting...")
         await delete_zoom_meeting(meeting_id)
 
         await telegram_app.bot.send_message(
@@ -305,6 +333,7 @@ async def run_test(session_type, chat_id):
             f"✅ Strict Button Click → OK\n"
             f"✅ 6-Hour Meeting Created → OK\n"
             f"✅ Registrant Import → OK\n"
+            f"✅ Registration Locked → OK\n"
             f"✅ Dummy meeting deleted → OK\n\n"
             f"<i>Ready for real runs at 8:30 AM & 4:30 PM IST</i>",
             parse_mode="HTML",
@@ -332,11 +361,9 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ist = timezone(timedelta(hours=5, minutes=30))
     now = datetime.now(ist)
     
-    # Converts time to a float (e.g., 8:30 AM = 8.5) for easy checking
     time_val = now.hour + now.minute / 60.0
 
     if time_val < 8.5:
-        # Before 8:30 AM: Show all options
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🌅 Pre-approve Morning Only", callback_data="pre_morning")],
             [InlineKeyboardButton("🌆 Pre-approve Evening Only", callback_data="pre_evening")],
@@ -345,7 +372,6 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚡ <b>Fast-Pass Setup</b>\nSelect the sessions you want to pre-approve for today:", reply_markup=keyboard, parse_mode="HTML")
     
     elif time_val < 16.5:
-        # Between 8:30 AM and 4:30 PM: Morning is gone, only show evening
         if pre_approved["evening"]:
             await update.message.reply_text("✅ Your Evening session is already pre-approved for today!")
             return
@@ -356,7 +382,6 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚡ <b>Fast-Pass Setup</b>\nMorning session has passed. Pre-approve the evening session?", reply_markup=keyboard, parse_mode="HTML")
     
     else:
-        # After 4:30 PM
         await update.message.reply_text("All sessions for today have already passed. I'll reset the board at midnight!")
 
 
@@ -372,13 +397,11 @@ async def send_confirmation(session_type):
         asyncio.create_task(run_automation(session_type))
         return
 
-    # Informal Professional Buttons
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Yes, run it",  callback_data=f"yes_{session_type}"),
         InlineKeyboardButton("⏭️ Skip for today",   callback_data=f"no_{session_type}"),
     ]])
 
-    # Informal Professional Prompt
     await telegram_app.bot.send_message(
         TELEGRAM_CHAT_ID,
         f"⚙️ <b>{session['label']} session is queued up!</b>\n\n" 
@@ -392,7 +415,6 @@ async def send_confirmation(session_type):
         try:
             await asyncio.sleep(15 * 60)
             logging.info(f"Auto-skipping {session_type} — no response in 15 min")
-            # Informal Professional Timeout
             await telegram_app.bot.send_message(
                 TELEGRAM_CHAT_ID,
                 f"⏳ <b>Auto-skipped</b> — I didn't get a response, so I skipped the {session['label']} session for today.",
@@ -430,7 +452,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pending_jobs[session_type].cancel()
         del pending_jobs[session_type]
 
-    # Informal Professional Click Responses
     if action == "yes":
         await query.edit_message_text("🚀 <b>Got it!</b> Starting the automation right now...", parse_mode="HTML")
         asyncio.create_task(run_automation(session_type))
@@ -438,7 +459,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⏭️ <b>Skipped.</b> I'll leave this session alone for today.", parse_mode="HTML")
 
 
-# 👈 FIX: The missing test_command was re-added here!
 async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != TELEGRAM_CHAT_ID:
         return
