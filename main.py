@@ -170,8 +170,10 @@ async def import_registrants(meeting_id, csv_path):
                         "full_name": name
                     }
                     
-                    if len(name_parts) > 1 and name_parts[1].strip():
+                   if len(name_parts) > 1 and name_parts[1].strip():
                         person["last_name"] = name_parts[1].strip()
+                    else:
+                        person["last_name"] = "-"  # 👈 Trick Zoom if they only have one name
                         
                     registrants.append(person)
 
