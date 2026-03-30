@@ -170,10 +170,10 @@ async def import_registrants(meeting_id, csv_path):
                         "full_name": name
                     }
                     
-                   if len(name_parts) > 1 and name_parts[1].strip():
+                    if len(name_parts) > 1 and name_parts[1].strip():
                         person["last_name"] = name_parts[1].strip()
                     else:
-                        person["last_name"] = "-"  # 👈 Trick Zoom if they only have one name
+                        person["last_name"] = "-"
                         
                     registrants.append(person)
 
@@ -186,9 +186,7 @@ async def import_registrants(meeting_id, csv_path):
     # 3. REGISTER IN ZOOM
     async with httpx.AsyncClient() as client:
         for person in registrants:
-            zoom_payload = {"first_name": person["first_name"], "email": person["email"]}
-            if "last_name" in person:
-                zoom_payload["last_name"] = person["last_name"]
+            zoom_payload = {"first_name": person["first_name"], "email": person["email"], "last_name": person["last_name"]}
 
             r = await client.post(
                 f"https://api.zoom.us/v2/meetings/{meeting_id}/registrants", 
