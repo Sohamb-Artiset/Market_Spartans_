@@ -6,7 +6,9 @@ import tempfile
 import logging
 import signal
 import html  
-import re  # 👈 Added for the Auto-Scrubber
+import re  
+import gspread
+from google.oauth2.service_account import Credentials
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -59,6 +61,17 @@ async def reset_pre_approvals():
     pre_approved = {"morning": False, "evening": False}
     logging.info("Midnight reset: Pre-approvals wiped for the new day.")
 
+# ── GOOGLE SHEETS DATABASE ────────────────────────────────────────────────────
+def get_google_sheet():
+    """Connects to Google Sheets using the bot's VIP key."""
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    creds = Credentials.from_service_account_file("google_credentials.json", scopes=scopes)
+    client = gspread.authorize(creds)
+    return client.open("Zoom Verified Users").sheet1
+
 # ── ZOOM API ──────────────────────────────────────────────────────────────────
 async def get_zoom_token():
     async with httpx.AsyncClient() as client:
@@ -108,24 +121,54 @@ async def create_zoom_meeting(session_type, is_test=False):
 
 
 async def import_registrants(meeting_id, csv_path):
-    token       = await get_zoom_token()
-    registrants = []
+    token = await get_zoom_token()
+    
+    # 1. FETCH DATABASE SYNC FUNCTION
+    def fetch_sheet_data():
+        sheet = get_google_sheet()
+        records = sheet.get_all_records()
+        db = {}
+        for i, row in enumerate(records):
+            db[row['Original Email']] = {
+                'row_num': i + 2,
+                'zoom_email': str(row.get('Zoom Email', '')),
+                'name': str(row.get('Name', '')),
+                'status': str(row.get('Status', ''))
+            }
+        return sheet, db
+        
+    await telegram_app.bot.send_message(TELEGRAM_CHAT_ID, "🔍 Checking Google Sheets Database...")
+    sheet, db = await asyncio.to_thread(fetch_sheet_data)
 
+    registrants = []
+    updates_to_make = [] 
+    new_rows_to_add = []
+
+    # 2. PROCESS CSV AND CROSS-CHECK
     with open(csv_path, newline="", encoding="utf-8-sig") as f:
         reader = csv.reader(f)
         for row in reader:
             if len(row) >= 2:
-                # 👈 AGGRESSIVE AUTO-SCRUBBER INCLUDED
-                raw_email = row[0]
-                clean_email = re.sub(r'\s+', '', raw_email).lower() 
+                raw_email = row[0].strip()
+                clean_csv_email = re.sub(r'\s+', '', raw_email).lower() 
+                name = row[1].strip()
                 
-                name  = row[1].strip()
-                
-                if clean_email:
+                if clean_csv_email:
+                    final_email = clean_csv_email
+                    
+                    db_entry = db.get(raw_email)
+                    if db_entry and db_entry['zoom_email'].strip():
+                        final_email = db_entry['zoom_email'].strip()
+                    
                     name_parts = name.split(" ", 1)
                     first = name_parts[0].strip() if name_parts and name_parts[0].strip() else "User"
                     
-                    person = {"first_name": first, "email": clean_email}
+                    person = {
+                        "first_name": first, 
+                        "email": final_email,
+                        "original_email": raw_email,
+                        "full_name": name
+                    }
                     
                     if len(name_parts) > 1 and name_parts[1].strip():
                         person["last_name"] = name_parts[1].strip()
@@ -138,31 +181,53 @@ async def import_registrants(meeting_id, csv_path):
     success_count = 0
     failed_emails = [] 
     
+    # 3. REGISTER IN ZOOM
     async with httpx.AsyncClient() as client:
         for person in registrants:
+            zoom_payload = {"first_name": person["first_name"], "email": person["email"]}
+            if "last_name" in person:
+                zoom_payload["last_name"] = person["last_name"]
+
             r = await client.post(
                 f"https://api.zoom.us/v2/meetings/{meeting_id}/registrants", 
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                json=person,
+                json=zoom_payload,
             )
             
-            if r.status_code < 400:
+            status_to_write = "Failed"
+            if r.status_code < 400 or "already registered" in r.text.lower():
                 success_count += 1
+                status_to_write = "Verified"
             else:
-                # 👈 DUPLICATE HANDLER: If already registered, count it as a success
-                if "already registered" not in r.text.lower():
-                    logging.error(f"Zoom Error for {person['email']}: {r.text}")
-                    failed_emails.append(person['email'])
-                else:
-                    success_count += 1 
+                logging.error(f"Zoom Error for {person['email']}: {r.text}")
+                failed_emails.append(person['original_email'])
                 
+            # 4. PREPARE DATABASE UPDATES
+            orig_email = person["original_email"]
+            if orig_email in db:
+                if db[orig_email]['status'] != status_to_write:
+                    updates_to_make.append({
+                        'range': f'D{db[orig_email]["row_num"]}',
+                        'values': [[status_to_write]]
+                    })
+            else:
+                new_rows_to_add.append([orig_email, "", person["full_name"], status_to_write])
+
             await asyncio.sleep(0.1)
+
+    # 5. PUSH UPDATES TO GOOGLE SHEETS
+    def apply_sheet_updates():
+        if updates_to_make:
+            sheet.batch_update(updates_to_make)
+        if new_rows_to_add:
+            sheet.append_rows(new_rows_to_add)
+
+    await asyncio.to_thread(apply_sheet_updates)
 
     return success_count, failed_emails
 
 
 async def lock_meeting_registration(meeting_id):
-    # 👈 THE BOUNCER IS BACK
     """Locks the meeting to manual approval after CSV users are safely imported."""
     token = await get_zoom_token()
     async with httpx.AsyncClient() as client:
@@ -178,10 +243,12 @@ async def lock_meeting_registration(meeting_id):
 async def delete_zoom_meeting(meeting_id):
     token = await get_zoom_token()
     async with httpx.AsyncClient() as client:
-        await client.delete(
+        r = await client.delete(
             f"https://api.zoom.us/v2/meetings/{meeting_id}",
             headers={"Authorization": f"Bearer {token}"},
         )
+        if r.status_code >= 400:
+            raise Exception(f"Zoom refused to delete! Code: {r.status_code}, Msg: {r.text}")
 
 
 # ── PLAYWRIGHT ────────────────────────────────────────────────────────────────
@@ -253,7 +320,7 @@ async def run_automation(session_type):
         meeting_id, reg_url = await create_zoom_meeting(session_type, is_test=False)
 
         await telegram_app.bot.send_message(
-            TELEGRAM_CHAT_ID, "⏳ Step 3/4 — Importing registrants into Zoom..."
+            TELEGRAM_CHAT_ID, "⏳ Step 3/4 — Importing registrants and updating Database..."
         )
         count, failed_emails = await import_registrants(meeting_id, csv_path)
 
@@ -267,7 +334,7 @@ async def run_automation(session_type):
             failed_list_formatted = "\n".join([f"• <code>{email}</code>" for email in failed_emails])
             report_text += f"\n❌ <b>Failed:</b> {len(failed_emails)} users rejected.\n\n"
             report_text += f"📋 <b>Rejected emails:</b>\n{failed_list_formatted}\n\n"
-            report_text += "👆 Copy & register these manually"
+            report_text += "👆 Check Google Sheets to fix these!"
 
         report_text += f"\n\n🔗 <b>WhatsApp Link (Requires Approval):</b>\n{reg_url}"
 
@@ -316,7 +383,7 @@ async def run_test(session_type, chat_id):
         await telegram_app.bot.send_message(chat_id, "⏳ Step 2/5 — Creating 6-hour Zoom meeting (Silent)...")
         meeting_id, reg_url = await create_zoom_meeting(session_type, is_test=True)
         
-        await telegram_app.bot.send_message(chat_id, "⏳ Step 3/5 — Testing Registrant Import...")
+        await telegram_app.bot.send_message(chat_id, "⏳ Step 3/5 — Testing Database Import...")
         imported_count, failed_emails = await import_registrants(meeting_id, csv_path)
 
         await telegram_app.bot.send_message(chat_id, "⏳ Step 4/5 — Testing WhatsApp Link Lock...")
@@ -338,9 +405,8 @@ async def run_test(session_type, chat_id):
             chat_id,
             f"✅ <b>TEST COMPLETE — Everything works!</b>\n\n"
             f"✅ Market Spartans login → OK\n"
-            f"✅ Strict Button Click → OK\n"
             f"✅ 6-Hour Meeting Created → OK\n"
-            f"✅ Registrant Import → OK\n"
+            f"✅ Database Cross-Check → OK\n"
             f"✅ Registration Locked → OK\n"
             f"✅ Dummy meeting deleted → OK\n\n"
             f"<i>Ready for real runs at 8:30 AM & 4:30 PM IST</i>",

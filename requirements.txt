@@ -3,3 +3,5 @@ playwright==1.46.0
 httpx==0.25.2
 python-dotenv==1.0.0
 apscheduler==3.10.4
+gspread==6.2.1
+google-auth==2.49.1
