@@ -6,6 +6,7 @@ import tempfile
 import logging
 import signal
 import html  
+import re  # 👈 Added for the Auto-Scrubber
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -114,14 +115,17 @@ async def import_registrants(meeting_id, csv_path):
         reader = csv.reader(f)
         for row in reader:
             if len(row) >= 2:
-                email = row[0].strip()
+                # 👈 AGGRESSIVE AUTO-SCRUBBER INCLUDED
+                raw_email = row[0]
+                clean_email = re.sub(r'\s+', '', raw_email).lower() 
+                
                 name  = row[1].strip()
                 
-                if email:
+                if clean_email:
                     name_parts = name.split(" ", 1)
                     first = name_parts[0].strip() if name_parts and name_parts[0].strip() else "User"
                     
-                    person = {"first_name": first, "email": email}
+                    person = {"first_name": first, "email": clean_email}
                     
                     if len(name_parts) > 1 and name_parts[1].strip():
                         person["last_name"] = name_parts[1].strip()
@@ -145,8 +149,12 @@ async def import_registrants(meeting_id, csv_path):
             if r.status_code < 400:
                 success_count += 1
             else:
-                logging.error(f"Zoom Error for {person['email']}: {r.text}")
-                failed_emails.append(person['email'])
+                # 👈 DUPLICATE HANDLER: If already registered, count it as a success
+                if "already registered" not in r.text.lower():
+                    logging.error(f"Zoom Error for {person['email']}: {r.text}")
+                    failed_emails.append(person['email'])
+                else:
+                    success_count += 1 
                 
             await asyncio.sleep(0.1)
 
@@ -154,6 +162,7 @@ async def import_registrants(meeting_id, csv_path):
 
 
 async def lock_meeting_registration(meeting_id):
+    # 👈 THE BOUNCER IS BACK
     """Locks the meeting to manual approval after CSV users are safely imported."""
     token = await get_zoom_token()
     async with httpx.AsyncClient() as client:
@@ -253,7 +262,6 @@ async def run_automation(session_type):
         )
         await lock_meeting_registration(meeting_id)
 
-        # 👈 FINAL PROFESSIONAL REPORT
         report_text = f"✅ <b>{SESSIONS[session_type]['label']} Session complete!</b>\n\n👥 <b>Success:</b> {count} users added."
         if failed_emails:
             failed_list_formatted = "\n".join([f"• <code>{email}</code>" for email in failed_emails])
