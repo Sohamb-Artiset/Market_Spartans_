@@ -107,7 +107,7 @@ async def create_zoom_meeting(session_type, is_test=False):
                 "type": 2,
                 "duration": 360, 
                 "settings": {
-                    "approval_type": 0,  # 0 = Auto-Approve (Allows CSV users to get emails instantly)    
+                    "approval_type": 0,  
                     "registration_type": 2,  
                     "registrants_email_notification": send_email,
                     "meeting_authentication": False,
@@ -234,7 +234,7 @@ async def lock_meeting_registration(meeting_id):
         r = await client.patch(
             f"https://api.zoom.us/v2/meetings/{meeting_id}",
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json={"settings": {"approval_type": 1}} # 1 = Manual Approval
+            json={"settings": {"approval_type": 1}} 
         )
         if r.status_code >= 400:
             logging.error(f"Failed to lock meeting: {r.text}")
@@ -248,14 +248,13 @@ async def delete_zoom_meeting(meeting_id):
             headers={"Authorization": f"Bearer {token}"},
         )
         if r.status_code >= 400:
-            # 👈 Changed from a fatal crash to a gentle warning
             logging.warning(f"Could not delete dummy meeting (Missing Scope). ID: {meeting_id}")
-            # We will also notify Telegram so you remember to delete it manually
             await telegram_app.bot.send_message(
                 TELEGRAM_CHAT_ID, 
                 f"⚠️ <b>Note:</b> I couldn't delete the dummy meeting because I lack the Zoom permission. You can ignore this for now, but delete it manually later!",
                 parse_mode="HTML"
             )
+
 
 # ── PLAYWRIGHT ────────────────────────────────────────────────────────────────
 async def export_csv(session_type):
@@ -395,14 +394,19 @@ async def run_test(session_type, chat_id):
         await telegram_app.bot.send_message(chat_id, "⏳ Step 4/5 — Testing WhatsApp Link Lock...")
         await lock_meeting_registration(meeting_id)
 
-        await telegram_app.bot.send_message(
-            chat_id,
+        report_text = (
             f"✅ <b>Test Import successful!</b>\n"
             f"👥 Imported: {imported_count}\n"
-            f"❌ Failed: {len(failed_emails)}\n"
-            f"🔗 {reg_url}",
-            parse_mode="HTML",
         )
+        if failed_emails:
+            failed_list_formatted = "\n".join([f"• <code>{email}</code>" for email in failed_emails])
+            report_text += f"❌ Failed: {len(failed_emails)}\n📋 Rejected:\n{failed_list_formatted}\n"
+        else:
+            report_text += f"❌ Failed: 0\n"
+            
+        report_text += f"\n🔗 {reg_url}"
+
+        await telegram_app.bot.send_message(chat_id, report_text, parse_mode="HTML")
 
         await telegram_app.bot.send_message(chat_id, "⏳ Step 5/5 — Deleting dummy meeting...")
         await delete_zoom_meeting(meeting_id)
@@ -414,7 +418,7 @@ async def run_test(session_type, chat_id):
             f"✅ 6-Hour Meeting Created → OK\n"
             f"✅ Database Cross-Check → OK\n"
             f"✅ Registration Locked → OK\n"
-            f"✅ Dummy meeting deleted → OK\n\n"
+            f"✅ Dummy meeting check → OK\n\n"
             f"<i>Ready for real runs at 8:30 AM & 4:30 PM IST</i>",
             parse_mode="HTML",
         )
