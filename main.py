@@ -248,8 +248,14 @@ async def delete_zoom_meeting(meeting_id):
             headers={"Authorization": f"Bearer {token}"},
         )
         if r.status_code >= 400:
-            raise Exception(f"Zoom refused to delete! Code: {r.status_code}, Msg: {r.text}")
-
+            # 👈 Changed from a fatal crash to a gentle warning
+            logging.warning(f"Could not delete dummy meeting (Missing Scope). ID: {meeting_id}")
+            # We will also notify Telegram so you remember to delete it manually
+            await telegram_app.bot.send_message(
+                TELEGRAM_CHAT_ID, 
+                f"⚠️ <b>Note:</b> I couldn't delete the dummy meeting because I lack the Zoom permission. You can ignore this for now, but delete it manually later!",
+                parse_mode="HTML"
+            )
 
 # ── PLAYWRIGHT ────────────────────────────────────────────────────────────────
 async def export_csv(session_type):
