@@ -1,4 +1,5 @@
 import os
+import json
 import asyncio
 import httpx
 import csv
@@ -63,12 +64,23 @@ async def reset_pre_approvals():
 
 # ── GOOGLE SHEETS DATABASE ────────────────────────────────────────────────────
 def get_google_sheet():
-    """Connects to Google Sheets using the bot's VIP key."""
+    """Connects to Google Sheets using the bot's VIP key from env variables."""
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
     ]
-    creds = Credentials.from_service_account_file("google_credentials.json", scopes=scopes)
+    
+    # Fetch the raw JSON string from Railway variables
+    google_creds_json = os.getenv("GOOGLE_CREDENTIALS")
+    
+    if not google_creds_json:
+        raise ValueError("GOOGLE_CREDENTIALS environment variable is not set.")
+        
+    # Parse the string back into a dictionary
+    creds_dict = json.loads(google_creds_json)
+    
+    # Authenticate using the dictionary directly
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     client = gspread.authorize(creds)
     return client.open("Zoom Verified Users").sheet1
 
