@@ -29,18 +29,21 @@ ZOOM_CLIENT_SECRET = os.getenv("ZOOM_CLIENT_SECRET")
 ZOOM_TEMPLATE_ID   = os.getenv("ZOOM_TEMPLATE_ID")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = int(os.getenv("TELEGRAM_CHAT_ID"))
-MANGESH_HOST_EMAIL = "maangeshdkale@gmail.com"
+MANGESH_HOST_EMAILS = {
+    "maangeshdkale@gmail.com",
+    "dnyansecurities@gmail.com",
+}
 
 SESSIONS = {
     "morning": {
-        "label":        "🌅 Morning",
+        "label":        " Morning",
         "zoom_topic":   "Options Learnings with Mangesh Kale", 
         "site_url":     os.getenv("MORNING_SITE_URL"),
         "export_url":   os.getenv("MORNING_EXPORT_URL"),
         "meeting_time": os.getenv("MORNING_MEETING_TIME"),
     },
     "evening": {
-        "label":        "🌆 Evening",
+        "label":        " Evening",
         "zoom_topic":   "Forex with Mangesh Kale", 
         "site_url":     os.getenv("EVENING_SITE_URL"),
         "export_url":   os.getenv("EVENING_EXPORT_URL"),
@@ -150,7 +153,7 @@ async def import_registrants(meeting_id, csv_path):
             }
         return sheet, db
         
-    await telegram_app.bot.send_message(TELEGRAM_CHAT_ID, "🔍 Checking Google Sheets Database...")
+    await telegram_app.bot.send_message(TELEGRAM_CHAT_ID, " Checking Google Sheets Database...")
     sheet, db = await asyncio.to_thread(fetch_sheet_data)
 
     registrants = []
@@ -339,6 +342,25 @@ def csv_contains_email(csv_path, target_email):
     return False
 
 
+def csv_contains_any_email(csv_path, target_emails):
+    normalized_targets = {
+        re.sub(r"\s+", "", email).lower()
+        for email in target_emails
+    }
+
+    with open(csv_path, newline="", encoding="utf-8-sig") as f:
+        reader = csv.reader(f)
+        for row in reader:
+            if not row:
+                continue
+
+            csv_email = re.sub(r"\s+", "", row[0]).lower()
+            if csv_email in normalized_targets:
+                return True
+
+    return False
+
+
 # ── AUTOMATION RUNNER ─────────────────────────────────────────────────────────
 async def run_automation(session_type):
     csv_path = None
@@ -347,7 +369,7 @@ async def run_automation(session_type):
             TELEGRAM_CHAT_ID, "⏳ Step 1/4 — Logging in & exporting users from Market Spartans..."
         )
         csv_path = await export_csv(session_type)
-        mangesh_can_host = csv_contains_email(csv_path, MANGESH_HOST_EMAIL)
+        mangesh_can_host = csv_contains_any_email(csv_path, MANGESH_HOST_EMAILS)
 
         await telegram_app.bot.send_message(
             TELEGRAM_CHAT_ID, "⏳ Step 2/4 — Creating 6-Hour Zoom meeting from template..."
@@ -364,20 +386,20 @@ async def run_automation(session_type):
         )
         await lock_meeting_registration(meeting_id)
 
-        report_text = f"✅ <b>{SESSIONS[session_type]['label']} Session complete!</b>\n\n👥 <b>Success:</b> {count} users added."
+        report_text = f"✅ <b>{SESSIONS[session_type]['label']} Session complete!</b>\n\n <b>Success:</b> {count} users added."
         if failed_emails:
             failed_list_formatted = "\n".join([f"• <code>{email}</code>" for email in failed_emails])
             report_text += f"\n❌ <b>Failed:</b> {len(failed_emails)} users rejected.\n\n"
-            report_text += f"📋 <b>Rejected emails:</b>\n{failed_list_formatted}\n\n"
-            report_text += "👆 Check Google Sheets to fix these!"
+            report_text += f" <b>Rejected emails:</b>\n{failed_list_formatted}\n\n"
+            report_text += " Check Google Sheets to fix these!"
 
         if mangesh_can_host and start_url:
             report_text += (
-                f"\n\n🎙️ <b>Mangesh Host Link:</b>\n{start_url}"
-                f"\n<i>Use this only for <code>{MANGESH_HOST_EMAIL}</code>.</i>"
+                f"\n\n️ <b>Mangesh Host Link:</b>\n{start_url}"
+                "\n<i>Use this only for Mangesh's approved email accounts.</i>"
             )
 
-        report_text += f"\n\n🔗 <b>WhatsApp Link (Requires Approval):</b>\n{reg_url}"
+        report_text += f"\n\n <b>WhatsApp Link (Requires Approval):</b>\n{reg_url}"
 
         await telegram_app.bot.send_message(TELEGRAM_CHAT_ID, report_text, parse_mode="HTML", disable_web_page_preview=True)
 
@@ -400,7 +422,7 @@ async def run_test(session_type, chat_id):
     try:
         await telegram_app.bot.send_message(
             chat_id,
-            f"🧪 <b>TEST MODE — {SESSIONS[session_type]['label']} Session</b>\n"
+            f"離 <b>TEST MODE — {SESSIONS[session_type]['label']} Session</b>\n"
             f"<i>Full silent test: Emails are BLOCKED.</i>",
             parse_mode="HTML",
         )
@@ -408,7 +430,7 @@ async def run_test(session_type, chat_id):
         await telegram_app.bot.send_message(chat_id, "⏳ Step 1/5 — Logging in & exporting CSV...")
         csv_path = await export_csv(session_type)
         count, headers, preview = count_csv(csv_path)
-        mangesh_can_host = csv_contains_email(csv_path, MANGESH_HOST_EMAIL)
+        mangesh_can_host = csv_contains_any_email(csv_path, MANGESH_HOST_EMAILS)
 
         preview_text = "\n".join(
             [f"  {i+1}. {html.escape(str(list(r.values())[:2]))}" for i, r in enumerate(preview)]
@@ -416,8 +438,8 @@ async def run_test(session_type, chat_id):
         await telegram_app.bot.send_message(
             chat_id,
             f"✅ <b>CSV Export successful!</b>\n"
-            f"👥 Total users found: <b>{count}</b>\n"
-            f"📋 Columns: <code>{', '.join(headers)}</code>\n\n"
+            f" Total users found: <b>{count}</b>\n"
+            f" Columns: <code>{', '.join(headers)}</code>\n\n"
             f"First 3 rows:\n{preview_text}",
             parse_mode="HTML",
         )
@@ -433,21 +455,21 @@ async def run_test(session_type, chat_id):
 
         report_text = (
             f"✅ <b>Test Import successful!</b>\n"
-            f"👥 Imported: {imported_count}\n"
+            f" Imported: {imported_count}\n"
         )
         if failed_emails:
             failed_list_formatted = "\n".join([f"• <code>{email}</code>" for email in failed_emails])
-            report_text += f"❌ Failed: {len(failed_emails)}\n📋 Rejected:\n{failed_list_formatted}\n"
+            report_text += f"❌ Failed: {len(failed_emails)}\n Rejected:\n{failed_list_formatted}\n"
         else:
             report_text += f"❌ Failed: 0\n"
 
         if mangesh_can_host and start_url:
             report_text += (
-                f"\n🎙️ Mangesh Host Link:\n{start_url}"
-                f"\nUse only for {MANGESH_HOST_EMAIL}\n"
+                f"\n️ Mangesh Host Link:\n{start_url}"
+                "\nUse only for Mangesh's approved email accounts\n"
             )
             
-        report_text += f"\n🔗 {reg_url}"
+        report_text += f"\n {reg_url}"
 
         await telegram_app.bot.send_message(chat_id, report_text, parse_mode="HTML")
 
@@ -492,8 +514,8 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if time_val < 8.5:
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🌅 Pre-approve Morning Only", callback_data="pre_morning")],
-            [InlineKeyboardButton("🌆 Pre-approve Evening Only", callback_data="pre_evening")],
+            [InlineKeyboardButton(" Pre-approve Morning Only", callback_data="pre_morning")],
+            [InlineKeyboardButton(" Pre-approve Evening Only", callback_data="pre_evening")],
             [InlineKeyboardButton("✅ Pre-approve BOTH Sessions", callback_data="pre_both")]
         ])
         await update.message.reply_text("⚡ <b>Fast-Pass Setup</b>\nSelect the sessions you want to pre-approve for today:", reply_markup=keyboard, parse_mode="HTML")
@@ -504,7 +526,7 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🌆 Pre-approve Evening", callback_data="pre_evening")]
+            [InlineKeyboardButton(" Pre-approve Evening", callback_data="pre_evening")]
         ])
         await update.message.reply_text("⚡ <b>Fast-Pass Setup</b>\nMorning session has passed. Pre-approve the evening session?", reply_markup=keyboard, parse_mode="HTML")
     
@@ -580,7 +602,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         del pending_jobs[session_type]
 
     if action == "yes":
-        await query.edit_message_text("🚀 <b>Got it!</b> Starting the automation right now...", parse_mode="HTML")
+        await query.edit_message_text(" <b>Got it!</b> Starting the automation right now...", parse_mode="HTML")
         asyncio.create_task(run_automation(session_type))
     else:
         await query.edit_message_text("⏭️ <b>Skipped.</b> I'll leave this session alone for today.", parse_mode="HTML")
