@@ -29,6 +29,7 @@ ZOOM_CLIENT_SECRET = os.getenv("ZOOM_CLIENT_SECRET")
 ZOOM_TEMPLATE_ID   = os.getenv("ZOOM_TEMPLATE_ID")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = int(os.getenv("TELEGRAM_CHAT_ID"))
+MANGESH_HOST_EMAIL = "maangeshdkale@gmail.com"
 
 SESSIONS = {
     "morning": {
@@ -129,7 +130,7 @@ async def create_zoom_meeting(session_type, is_test=False):
         )
         r.raise_for_status()
         data = r.json()
-        return data["id"], data.get("registration_url", "")
+        return data["id"], data.get("registration_url", ""), data.get("start_url", "")
 
 
 async def import_registrants(meeting_id, csv_path):
@@ -322,6 +323,22 @@ def count_csv(csv_path):
     return len(rows), headers, rows[:3]
 
 
+def csv_contains_email(csv_path, target_email):
+    normalized_target = re.sub(r"\s+", "", target_email).lower()
+
+    with open(csv_path, newline="", encoding="utf-8-sig") as f:
+        reader = csv.reader(f)
+        for row in reader:
+            if not row:
+                continue
+
+            csv_email = re.sub(r"\s+", "", row[0]).lower()
+            if csv_email == normalized_target:
+                return True
+
+    return False
+
+
 # ── AUTOMATION RUNNER ─────────────────────────────────────────────────────────
 async def run_automation(session_type):
     csv_path = None
@@ -330,11 +347,12 @@ async def run_automation(session_type):
             TELEGRAM_CHAT_ID, "⏳ Step 1/4 — Logging in & exporting users from Market Spartans..."
         )
         csv_path = await export_csv(session_type)
+        mangesh_can_host = csv_contains_email(csv_path, MANGESH_HOST_EMAIL)
 
         await telegram_app.bot.send_message(
             TELEGRAM_CHAT_ID, "⏳ Step 2/4 — Creating 6-Hour Zoom meeting from template..."
         )
-        meeting_id, reg_url = await create_zoom_meeting(session_type, is_test=False)
+        meeting_id, reg_url, start_url = await create_zoom_meeting(session_type, is_test=False)
 
         await telegram_app.bot.send_message(
             TELEGRAM_CHAT_ID, "⏳ Step 3/4 — Importing registrants and updating Database..."
@@ -352,6 +370,12 @@ async def run_automation(session_type):
             report_text += f"\n❌ <b>Failed:</b> {len(failed_emails)} users rejected.\n\n"
             report_text += f"📋 <b>Rejected emails:</b>\n{failed_list_formatted}\n\n"
             report_text += "👆 Check Google Sheets to fix these!"
+
+        if mangesh_can_host and start_url:
+            report_text += (
+                f"\n\n🎙️ <b>Mangesh Host Link:</b>\n{start_url}"
+                f"\n<i>Use this only for <code>{MANGESH_HOST_EMAIL}</code>.</i>"
+            )
 
         report_text += f"\n\n🔗 <b>WhatsApp Link (Requires Approval):</b>\n{reg_url}"
 
@@ -384,6 +408,7 @@ async def run_test(session_type, chat_id):
         await telegram_app.bot.send_message(chat_id, "⏳ Step 1/5 — Logging in & exporting CSV...")
         csv_path = await export_csv(session_type)
         count, headers, preview = count_csv(csv_path)
+        mangesh_can_host = csv_contains_email(csv_path, MANGESH_HOST_EMAIL)
 
         preview_text = "\n".join(
             [f"  {i+1}. {html.escape(str(list(r.values())[:2]))}" for i, r in enumerate(preview)]
@@ -398,7 +423,7 @@ async def run_test(session_type, chat_id):
         )
 
         await telegram_app.bot.send_message(chat_id, "⏳ Step 2/5 — Creating 6-hour Zoom meeting (Silent)...")
-        meeting_id, reg_url = await create_zoom_meeting(session_type, is_test=True)
+        meeting_id, reg_url, start_url = await create_zoom_meeting(session_type, is_test=True)
         
         await telegram_app.bot.send_message(chat_id, "⏳ Step 3/5 — Testing Database Import...")
         imported_count, failed_emails = await import_registrants(meeting_id, csv_path)
@@ -415,6 +440,12 @@ async def run_test(session_type, chat_id):
             report_text += f"❌ Failed: {len(failed_emails)}\n📋 Rejected:\n{failed_list_formatted}\n"
         else:
             report_text += f"❌ Failed: 0\n"
+
+        if mangesh_can_host and start_url:
+            report_text += (
+                f"\n🎙️ Mangesh Host Link:\n{start_url}"
+                f"\nUse only for {MANGESH_HOST_EMAIL}\n"
+            )
             
         report_text += f"\n🔗 {reg_url}"
 
