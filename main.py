@@ -16,6 +16,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 from playwright.async_api import async_playwright
+from telethon import TelegramClient
+from telethon.sessions import StringSession
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -33,6 +35,12 @@ MANGESH_HOST_EMAILS = {
     "maangeshdkale@gmail.com",
     "dnyansecurities@gmail.com",
 }
+
+# ── TELETHON (personal account messaging) ────────────────────────────────────
+TELETHON_API_ID    = os.getenv("TELETHON_API_ID")
+TELETHON_API_HASH  = os.getenv("TELETHON_API_HASH")
+TELETHON_SESSION   = os.getenv("TELETHON_SESSION")
+MANGESH_PHONE      = "+919922995956"
 
 SESSIONS = {
     "morning": {
@@ -361,6 +369,30 @@ def csv_contains_any_email(csv_path, target_emails):
     return False
 
 
+# ── PERSONAL TELEGRAM MESSENGER (via Telethon) ────────────────────────────────
+async def send_personal_message_to_mangesh(session_label, start_url):
+    """Sends the Zoom host link to Mangesh Kale from your personal Telegram account."""
+    if not all([TELETHON_API_ID, TELETHON_API_HASH, TELETHON_SESSION]):
+        logging.warning("Telethon env vars not set — skipping personal message to Mangesh.")
+        return
+
+    try:
+        message = (
+            f"✅ {session_label} Session complete!\n\n"
+            f"🎙️ Mangesh Host Link:\n{start_url}\n\n"
+            f"Use this to start the meeting as host."
+        )
+        async with TelegramClient(
+            StringSession(TELETHON_SESSION),
+            int(TELETHON_API_ID),
+            TELETHON_API_HASH
+        ) as client:
+            await client.send_message(MANGESH_PHONE, message)
+        logging.info("✅ Personal message sent to Mangesh via Telethon.")
+    except Exception as e:
+        logging.error(f"Telethon send failed: {e}")
+
+
 # ── AUTOMATION RUNNER ─────────────────────────────────────────────────────────
 async def run_automation(session_type):
     csv_path = None
@@ -397,6 +429,10 @@ async def run_automation(session_type):
             report_text += (
                 f"\n\n️ <b>Mangesh Host Link:</b>\n{start_url}"
                 "\n<i>Use this only for Mangesh's approved email accounts.</i>"
+            )
+            # Send host link privately to Mangesh from your personal Telegram
+            asyncio.create_task(
+                send_personal_message_to_mangesh(SESSIONS[session_type]['label'], start_url)
             )
 
         report_text += f"\n\n <b>WhatsApp Link (Requires Approval):</b>\n{reg_url}"
