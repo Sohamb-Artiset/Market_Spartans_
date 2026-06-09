@@ -42,6 +42,11 @@ TELETHON_API_HASH  = os.getenv("TELETHON_API_HASH")
 TELETHON_SESSION   = os.getenv("TELETHON_SESSION")
 MANGESH_PHONE      = "+919922995956"
 
+# ── GREEN API (WhatsApp group messaging) ──────────────────────────────────
+GREENAPI_INSTANCE_ID = os.getenv("GREENAPI_INSTANCE_ID")
+GREENAPI_TOKEN       = os.getenv("GREENAPI_TOKEN")
+WHATSAPP_GROUP_ID    = os.getenv("WHATSAPP_GROUP_ID")  # e.g. "120363XXXXXXXXXX@g.us"
+
 SESSIONS = {
     "morning": {
         "label":        " Morning",
@@ -393,6 +398,34 @@ async def send_personal_message_to_mangesh(session_label, start_url):
         logging.error(f"Telethon send failed: {e}")
 
 
+# ── WHATSAPP GROUP MESSENGER (via Green API) ───────────────────────────────
+async def send_whatsapp_group_message(session_label, reg_url):
+    """Sends the WhatsApp registration link to the WhatsApp group via Green API."""
+    if not all([GREENAPI_INSTANCE_ID, GREENAPI_TOKEN, WHATSAPP_GROUP_ID]):
+        logging.warning("Green API env vars not set — skipping WhatsApp group message.")
+        return
+
+    try:
+        message = (
+            f"✅ {session_label} Session is live!\n\n"
+            f"🔗 Join Link (Requires Approval):\n{reg_url}\n\n"
+            f"⚠️ You must be pre-registered to join. Tap the link and submit your request."
+        )
+        url = (
+            f"https://api.green-api.com/waInstance{GREENAPI_INSTANCE_ID}"
+            f"/sendMessage/{GREENAPI_TOKEN}"
+        )
+        payload = {"chatId": WHATSAPP_GROUP_ID, "message": message}
+
+        async with httpx.AsyncClient() as client:
+            r = await client.post(url, json=payload, timeout=15)
+            r.raise_for_status()
+
+        logging.info("✅ WhatsApp group message sent via Green API.")
+    except Exception as e:
+        logging.error(f"Green API send failed: {e}")
+
+
 # ── AUTOMATION RUNNER ─────────────────────────────────────────────────────────
 async def run_automation(session_type):
     csv_path = None
@@ -438,6 +471,11 @@ async def run_automation(session_type):
         report_text += f"\n\n <b>WhatsApp Link (Requires Approval):</b>\n{reg_url}"
 
         await telegram_app.bot.send_message(TELEGRAM_CHAT_ID, report_text, parse_mode="HTML", disable_web_page_preview=True)
+
+        # Send the WhatsApp registration link to the WhatsApp group
+        asyncio.create_task(
+            send_whatsapp_group_message(SESSIONS[session_type]['label'], reg_url)
+        )
 
     except Exception as e:
         logging.error(f"Automation error [{session_type}]: {e}")
