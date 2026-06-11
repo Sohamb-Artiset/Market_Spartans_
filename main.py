@@ -40,7 +40,7 @@ MANGESH_HOST_EMAILS = {
 TELETHON_API_ID    = os.getenv("TELETHON_API_ID")
 TELETHON_API_HASH  = os.getenv("TELETHON_API_HASH")
 TELETHON_SESSION   = os.getenv("TELETHON_SESSION")
-MANGESH_PHONE      = "+919922995956"
+MANGESH_PHONE      = "+919922997314"
 
 # ── GREEN API (WhatsApp group messaging) ──────────────────────────────────
 GREENAPI_INSTANCE_ID = os.getenv("GREENAPI_INSTANCE_ID")
@@ -383,7 +383,7 @@ async def send_personal_message_to_mangesh(session_label, start_url):
 
     try:
         message = (
-            f"✅ {session_label} Session complete!\n\n"
+            f"✅ {session_label} Meeting complete!\n\n"
             f"🎙️ Mangesh Host Link:\n{start_url}\n\n"
             f"Use this to start the meeting as host."
         )
@@ -407,7 +407,7 @@ async def send_whatsapp_group_message(session_label, reg_url):
 
     try:
         message = (
-            f"✅ {session_label} Session is live!\n\n"
+            f"✅ {session_label} Meeting Link:\n\n"
             f"🔗 Join Link (Requires Approval):\n{reg_url}\n\n"
             f"⚠️ You must be pre-registered to join. Tap the link and submit your request."
         )
@@ -423,7 +423,39 @@ async def send_whatsapp_group_message(session_label, reg_url):
 
         logging.info("✅ WhatsApp group message sent via Green API.")
     except Exception as e:
-        logging.error(f"Green API send failed: {e}")
+        logging.error(f"Green API group send failed: {e}")
+
+
+async def send_whatsapp_personal_message(session_label, start_url):
+    """Sends the Zoom host link directly to Mangesh's WhatsApp via Green API."""
+    if not all([GREENAPI_INSTANCE_ID, GREENAPI_TOKEN]):
+        logging.warning("Green API credentials not set — skipping personal WhatsApp message.")
+        return
+
+    try:
+        message = (
+            f"✅ {session_label} Meeting complete!\n\n"
+            f"🎙️ Mangesh Host Link:\n{start_url}\n\n"
+            f"Use this to start the meeting as host."
+        )
+        # Convert phone number to chatId format (must end with @c.us for personal chats)
+        # MANGESH_PHONE is '+919922997314'. We need '919922997314@c.us'
+        clean_phone = MANGESH_PHONE.replace("+", "").strip()
+        chat_id = f"{clean_phone}@c.us"
+        
+        url = (
+            f"https://api.green-api.com/waInstance{GREENAPI_INSTANCE_ID}"
+            f"/sendMessage/{GREENAPI_TOKEN}"
+        )
+        payload = {"chatId": chat_id, "message": message}
+
+        async with httpx.AsyncClient() as client:
+            r = await client.post(url, json=payload, timeout=15)
+            r.raise_for_status()
+
+        logging.info("✅ WhatsApp personal message sent to Mangesh via Green API.")
+    except Exception as e:
+        logging.error(f"Green API personal send failed: {e}")
 
 
 # ── AUTOMATION RUNNER ─────────────────────────────────────────────────────────
@@ -451,7 +483,7 @@ async def run_automation(session_type):
         )
         await lock_meeting_registration(meeting_id)
 
-        report_text = f"✅ <b>{SESSIONS[session_type]['label']} Session complete!</b>\n\n <b>Success:</b> {count} users added."
+        report_text = f"✅ <b>{SESSIONS[session_type]['label']} Meeting complete!</b>\n\n <b>Success:</b> {count} users added."
         if failed_emails:
             failed_list_formatted = "\n".join([f"• <code>{email}</code>" for email in failed_emails])
             report_text += f"\n❌ <b>Failed:</b> {len(failed_emails)} users rejected.\n\n"
@@ -466,6 +498,10 @@ async def run_automation(session_type):
             # Send host link privately to Mangesh from your personal Telegram
             asyncio.create_task(
                 send_personal_message_to_mangesh(SESSIONS[session_type]['label'], start_url)
+            )
+            # Send host link privately to Mangesh on WhatsApp
+            asyncio.create_task(
+                send_whatsapp_personal_message(SESSIONS[session_type]['label'], start_url)
             )
 
         report_text += f"\n\n <b>WhatsApp Link (Requires Approval):</b>\n{reg_url}"
