@@ -288,42 +288,108 @@ async def delete_zoom_meeting(meeting_id):
 # ── PLAYWRIGHT ────────────────────────────────────────────────────────────────
 async def export_csv(session_type):
     session = SESSIONS[session_type]
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=[
-                "--ignore-certificate-errors", 
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",             
-                "--disable-dev-shm-usage"   
-            ]
-        )
-        context = await browser.new_context(
-            accept_downloads=True,
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        )
-        page = await context.new_page()
+    screenshot_path = os.path.join(tempfile.gettempdir(), f"failed_{session_type}.png")
+    
+    # Remove old screenshot if it exists
+    if os.path.exists(screenshot_path):
         try:
-            await page.goto(f"{session['site_url']}/index.php", wait_until="domcontentloaded")
+            os.remove(screenshot_path)
+        except Exception:
+            pass
+
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        logging.info(f"Export attempt {attempt}/{max_retries} for {session_type}...")
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--ignore-certificate-errors", 
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",             
+                    "--disable-dev-shm-usage"   
+                ]
+            )
+            context = await browser.new_context(
+                accept_downloads=True,
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            )
+            page = await context.new_page()
             
-            await page.fill('input[name="username"]', MS_USERNAME)
-            await page.fill('input[name="password"]', MS_PASSWORD)
-            
-            async with page.expect_navigation(wait_until="domcontentloaded"):
+            try:
+                # 1. Navigating to login page
+                logging.info(f"Navigating to login page: {session['site_url']}/index.php")
+                await page.goto(f"{session['site_url']}/index.php", wait_until="domcontentloaded", timeout=60000)
+                
+                # Check for bot protection / Cloudflare
+                title = await page.title()
+                if "Attention Required!" in title or "Cloudflare" in title or "Just a moment..." in title:
+                    raise Exception("Blocked by Cloudflare/Bot protection on login page.")
+                
+                # 2. Waiting for username input
+                try:
+                    await page.wait_for_selector('input[name="username"]', timeout=15000)
+                except Exception:
+                    raise Exception(f"Username input not found. Title: {title}. URL: {page.url}")
+
+                # 3. Fill and submit login
+                await page.fill('input[name="username"]', MS_USERNAME)
+                await page.fill('input[name="password"]', MS_PASSWORD)
+                
+                logging.info("Submitting login form...")
                 await page.click('button[type="submit"]')
-            
-            await page.goto(session["export_url"], wait_until="domcontentloaded")
+                
+                # Wait 3 seconds for login redirect / processing
+                await page.wait_for_timeout(3000)
+                
+                # 4. Navigating to Export page
+                logging.info(f"Navigating to export URL: {session['export_url']}")
+                await page.goto(session["export_url"], wait_until="domcontentloaded", timeout=60000)
+                
+                # Check if we were redirected back to index.php (indicates login failure)
+                current_url = page.url
+                if "index.php" in current_url:
+                    error_text = ""
+                    try:
+                        # Try to grab any danger alert or error message on page
+                        error_el = await page.query_selector(".alert-danger, .error, .text-danger")
+                        if error_el:
+                            error_text = await error_el.inner_text()
+                    except Exception:
+                        pass
+                    raise Exception(f"Login failed: Redirected to login page. Message: {error_text.strip() if error_text else 'None'}")
+                
+                # 5. Locate the export button
+                export_button = page.locator('button[name="btnsavezoom"]:has-text("Export for Zoom")')
+                try:
+                    await export_button.wait_for(state="visible", timeout=20000)
+                except Exception:
+                    raise Exception(f"Export button not visible on page. Current URL: {current_url}")
 
-            async with page.expect_download(timeout=120_000) as dl_info:
-                await page.locator('button[name="btnsavezoom"]:has-text("Export for Zoom")').click()
+                # 6. Click and download
+                async with page.expect_download(timeout=120_000) as dl_info:
+                    await export_button.click()
 
-            download = await dl_info.value
-            tmp_path = tempfile.mktemp(suffix=".csv")
-            await download.save_as(tmp_path)
-            return tmp_path
-        finally:
-            await browser.close()
+                download = await dl_info.value
+                tmp_path = tempfile.mktemp(suffix=".csv")
+                await download.save_as(tmp_path)
+                logging.info(f"Successfully exported CSV on attempt {attempt}")
+                return tmp_path
+
+            except Exception as e:
+                logging.warning(f"Attempt {attempt} failed: {e}")
+                # Save screenshot on the last attempt
+                if attempt == max_retries:
+                    try:
+                        await page.screenshot(path=screenshot_path, full_page=True)
+                        logging.info(f"Saved failure screenshot to {screenshot_path}")
+                    except Exception as se:
+                        logging.error(f"Could not capture screenshot: {se}")
+                    raise
+                # Wait before retrying
+                await asyncio.sleep(10)
+            finally:
+                await browser.close()
 
 
 # ── CSV COUNTER (test mode) ───────────────────────────────────────────────────
@@ -521,6 +587,20 @@ async def run_automation(session_type):
             f"❌ <b>Automation failed!</b>\n\nError: <code>{safe_error}</code>\n\nPlease run manually today.",
             parse_mode="HTML", 
         )
+        
+        # Check if failure screenshot exists and send it
+        screenshot_path = os.path.join(tempfile.gettempdir(), f"failed_{session_type}.png")
+        if os.path.exists(screenshot_path):
+            try:
+                with open(screenshot_path, "rb") as photo:
+                    await telegram_app.bot.send_photo(
+                        chat_id=TELEGRAM_CHAT_ID,
+                        photo=photo,
+                        caption=f"🔍 Playwright failure screenshot for {session_type} session"
+                    )
+                os.remove(screenshot_path)
+            except Exception as te:
+                logging.error(f"Failed to send failure screenshot: {te}")
     finally:
         if csv_path and os.path.exists(csv_path):
             os.remove(csv_path)
@@ -606,6 +686,20 @@ async def run_test(session_type, chat_id):
             f"❌ <b>Test failed!</b>\n\nError: <code>{safe_error}</code>",
             parse_mode="HTML", 
         )
+        
+        # Check if failure screenshot exists and send it
+        screenshot_path = os.path.join(tempfile.gettempdir(), f"failed_{session_type}.png")
+        if os.path.exists(screenshot_path):
+            try:
+                with open(screenshot_path, "rb") as photo:
+                    await telegram_app.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=photo,
+                        caption=f"🔍 Playwright failure screenshot for {session_type} test"
+                    )
+                os.remove(screenshot_path)
+            except Exception as te:
+                logging.error(f"Failed to send failure screenshot: {te}")
     finally:
         if csv_path and os.path.exists(csv_path):
             os.remove(csv_path)
