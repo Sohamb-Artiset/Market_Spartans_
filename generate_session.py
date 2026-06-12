@@ -20,8 +20,22 @@ async def main():
     print("You need your API credentials from https://my.telegram.org")
     print()
 
-    api_id   = int(input("Enter your api_id (number): ").strip())
-    api_hash = input("Enter your api_hash (string): ").strip()
+    import os
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    api_id_env = os.getenv("TELETHON_API_ID")
+    api_hash_env = os.getenv("TELETHON_API_HASH")
+
+    if api_id_env and api_hash_env:
+        # Clean potential newlines or quotes
+        api_id = int(api_id_env.replace('"', '').replace("'", "").strip())
+        api_hash = api_hash_env.replace('"', '').replace("'", "").strip()
+        print(f"Loaded api_id: {api_id}")
+        print(f"Loaded api_hash: {api_hash[:4]}...{api_hash[-4:]}")
+    else:
+        api_id   = int(input("Enter your api_id (number): ").strip())
+        api_hash = input("Enter your api_hash (string): ").strip()
 
     print()
     print("Starting auth — you'll receive an OTP on Telegram...")
